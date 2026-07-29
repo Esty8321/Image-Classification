@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>הבדיקה הסתיימה</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<main class="container">
+    <section class="card">
+        <h1>הבדיקה הסתיימה בהצלחה</h1>
+        <p>מספר כתובות שעובדו בהרצה: <strong>{{ processed_count }}</strong></p>
+        <p>מספר כתובות כולל בהיסטוריה: <strong>{{ total_history }}</strong></p>
+        <p>
+            <a class="button" href="{{ sheet_url }}" target="_blank" rel="noopener">
+                פתיחת Google Sheet
+            </a>
+        </p>
+        <p><a href="{{ url_for('index') }}">חזרה למסך הראשי</a></p>
+    </section>
+</main>
+</body>
+</html>

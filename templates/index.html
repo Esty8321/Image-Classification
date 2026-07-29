@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>מערכת בדיקת תמונות</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<main class="container">
+    <section class="card">
+        <h1>מערכת בדיקת תמונות</h1>
+        <p>מעלים קובץ XLSX, מפעילים את הבדיקה ומקבלים Google Sheet חדש עם כל ההיסטוריה.</p>
+
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% for category, message in messages %}
+                <div class="alert {{ category }}">{{ message }}</div>
+            {% endfor %}
+        {% endwith %}
+
+        <div class="status-row">
+            <strong>חיבור Google:</strong>
+            {% if connected %}
+                <span class="ok">מחובר</span>
+                <form action="{{ url_for('disconnect_google') }}" method="post">
+                    <button class="secondary" type="submit">ניתוק Google</button>
+                </form>
+            {% else %}
+                <span class="bad">לא מחובר</span>
+                <a class="button secondary" href="{{ url_for('google_login') }}">התחברות ל-Google</a>
+            {% endif %}
+        </div>
+
+        <form action="{{ url_for('run_classification') }}" method="post" enctype="multipart/form-data">
+            <label for="xlsx_file">קובץ XLSX</label>
+            <input id="xlsx_file" name="xlsx_file" type="file" accept=".xlsx" required>
+            <button type="submit" {% if not connected %}disabled{% endif %}>
+                הפעלת הבדיקה ויצירת Google Sheet
+            </button>
+        </form>
+    </section>
+
+    <section class="card danger-zone">
+        <h2>מחיקת היסטוריה</h2>
+        <p>הפעולה מוחקת את קובץ ה-CSV ואת גיבוי ה-JSON המקומיים בלבד. Google Sheets שכבר נוצרו אינם נמחקים.</p>
+        <form action="{{ url_for('clear_history') }}" method="post"
+              onsubmit="return confirm('למחוק את כל ההיסטוריה המקומית?');">
+            <label for="confirmation">יש להקליד DELETE לאישור</label>
+            <input id="confirmation" name="confirmation" autocomplete="off" required>
+            <button class="danger" type="submit">מחיקת היסטוריה</button>
+        </form>
+    </section>
+</main>
+</body>
+</html>

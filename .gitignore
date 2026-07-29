@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+client_secret.json
+data/*.csv
+data/*.json
+uploads/*
+!uploads/.gitkeep
+!data/.gitkeep
