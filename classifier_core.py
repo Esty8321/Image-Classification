@@ -235,11 +235,66 @@ def create_run_column_name(
 
 
 def find_first_data_row(worksheet) -> int | None:
-    for row_number in range(1, worksheet.max_row + 1):
-        raw_url = worksheet[f"{URL_COLUMN}{row_number}"].value
-        extracted_url = extract_url_from_excel_value(raw_url)
+    """
+    Find the first row that contains at least one real value.
 
-        if extracted_url:
+    Returns:
+        The row number when data is found.
+        None when the worksheet is empty.
+    """
+
+    max_row = worksheet.max_row
+
+    if max_row is None:
+        return None
+
+    try:
+        max_row = int(max_row)
+    except (TypeError, ValueError):
+        return None
+
+    if max_row < 1:
+        return None
+
+    max_column = worksheet.max_column
+
+    if max_column is None:
+        return None
+
+    try:
+        max_column = int(max_column)
+    except (TypeError, ValueError):
+        return None
+
+    if max_column < 1:
+        return None
+
+    for row_number in range(
+        1,
+        max_row + 1,
+    ):
+        row_has_value = False
+
+        for column_number in range(
+            1,
+            max_column + 1,
+        ):
+            value = worksheet.cell(
+                row=row_number,
+                column=column_number,
+            ).value
+
+            if value is None:
+                continue
+
+            if isinstance(value, str):
+                value = value.strip()
+
+            if value != "":
+                row_has_value = True
+                break
+
+        if row_has_value:
             return row_number
 
     return None
@@ -279,6 +334,10 @@ def read_xlsx_rows(xlsx_path: Path) -> list[dict[str, Any]]:
 
         first_data_row = find_first_data_row(worksheet)
 
+        if first_data_row is None:
+            raise ValueError(
+                "גיליון ה־Excel שנבחר ריק או שאינו מכיל נתונים תקינים."
+            )
         if first_data_row is None:
             raise ValueError(
                 f"No URL was found in column {URL_COLUMN}"

@@ -9,8 +9,7 @@ from pathlib import Path
 from datetime import datetime
 from io import BytesIO
 from openpyxl import Workbook
-from openpyxl.formatting.rule import FormulaRule
-from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.table import Table, TableStyleInfo
 
@@ -79,38 +78,33 @@ def create_history_xlsx(
     rows: list[dict[str, str]],
 ) -> BytesIO:
     """
-    Create a formatted XLSX workbook from the CSV history.
-
-    The workbook contains:
-    - RTL layout
-    - frozen header and first three columns
-    - filters
-    - styled headers
-    - column widths
-    - conditional formatting based on the latest result column
+    Create a Windows-friendly XLSX workbook.
     """
+
+    if not headers:
+        raise ValueError(
+            "לא נמצאו כותרות ליצירת קובץ Excel."
+        )
 
     workbook = Workbook()
     worksheet = workbook.active
     worksheet.title = "Results"
 
     worksheet.sheet_view.rightToLeft = True
-
-    # Freeze the first row and the first three columns.
     worksheet.freeze_panes = "D2"
+    worksheet.sheet_properties.pageSetUpPr.fitToPage = True
+    worksheet.page_setup.fitToWidth = 1
+    worksheet.page_setup.fitToHeight = 0
 
-    # Header style.
     header_fill = PatternFill(
         fill_type="solid",
         fgColor="2E5480",
     )
-
     header_font = Font(
         color="FFFFFF",
         bold=True,
         size=11,
     )
-
     header_alignment = Alignment(
         horizontal="center",
         vertical="center",
@@ -118,26 +112,74 @@ def create_history_xlsx(
     )
 
     body_alignment = Alignment(
+        horizontal="right",
         vertical="center",
         wrap_text=True,
     )
-
     centered_alignment = Alignment(
         horizontal="center",
         vertical="center",
         wrap_text=True,
     )
-
     url_alignment = Alignment(
         horizontal="left",
         vertical="center",
-        wrap_text=True,
+        wrap_text=False,
         readingOrder=1,
     )
 
-    # Write headers.
-    for column_index, header in enumerate(
+    thin_gray = Side(
+        style="thin",
+        color="D9E1F2",
+    )
+    cell_border = Border(
+        left=thin_gray,
+        right=thin_gray,
+        top=thin_gray,
+        bottom=thin_gray,
+    )
+
+    match_fill = PatternFill(
+        fill_type="solid",
+        fgColor="D9EAD3",
+    )
+    mismatch_fill = PatternFill(
+        fill_type="solid",
+        fgColor="F4CCCC",
+    )
+    error_fill = PatternFill(
+        fill_type="solid",
+        fgColor="FFF2CC",
+    )
+
+    safe_headers: list[str] = []
+    used_headers: set[str] = set()
+
+    for index, original_header in enumerate(
         headers,
+        start=1,
+    ):
+        base_header = str(
+            original_header or f"Column {index}"
+        ).strip()
+
+        if not base_header:
+            base_header = f"Column {index}"
+
+        unique_header = base_header
+        duplicate_number = 2
+
+        while unique_header in used_headers:
+            unique_header = (
+                f"{base_header} ({duplicate_number})"
+            )
+            duplicate_number += 1
+
+        used_headers.add(unique_header)
+        safe_headers.append(unique_header)
+
+    for column_index, header in enumerate(
+        safe_headers,
         start=1,
     ):
         cell = worksheet.cell(
@@ -145,30 +187,68 @@ def create_history_xlsx(
             column=column_index,
             value=header,
         )
-
         cell.fill = header_fill
         cell.font = header_font
         cell.alignment = header_alignment
+        cell.border = cell_border
 
-    # Write rows.
+    latest_header = headers[-1] if len(headers) > 3 else ""
+    expected_header = headers[2] if len(headers) >= 3 else ""
+
     for row_index, row in enumerate(
         rows,
         start=2,
     ):
-        for column_index, header in enumerate(
+        expected_value = str(
+            row.get(expected_header, "")
+        ).strip()
+
+        latest_value = str(
+            row.get(latest_header, "")
+        ).strip()
+
+        row_fill = None
+
+        if latest_header and latest_value:
+            if latest_value.startswith("שגיאה"):
+                row_fill = error_fill
+            elif latest_value == expected_value:
+                row_fill = match_fill
+            else:
+                row_fill = mismatch_fill
+
+        for column_index, original_header in enumerate(
             headers,
             start=1,
         ):
-            value = row.get(header, "")
+            raw_value = row.get(
+                original_header,
+                "",
+            )
+            value = "" if raw_value is None else str(raw_value)
 
             cell = worksheet.cell(
                 row=row_index,
                 column=column_index,
                 value=value,
             )
+            cell.border = cell_border
+
+            if row_fill is not None:
+                cell.fill = row_fill
 
             if column_index == 1:
                 cell.alignment = url_alignment
+
+                if value.startswith(
+                    ("http://", "https://")
+                ):
+                    cell.hyperlink = value
+                    cell.style = "Hyperlink"
+                    cell.border = cell_border
+
+                    if row_fill is not None:
+                        cell.fill = row_fill
 
             elif column_index >= 3:
                 cell.alignment = centered_alignment
@@ -176,50 +256,48 @@ def create_history_xlsx(
             else:
                 cell.alignment = body_alignment
 
-    row_count = max(len(rows) + 1, 2)
+    data_last_row = len(rows) + 1
     column_count = len(headers)
+    last_column_letter = get_column_letter(
+        column_count
+    )
 
-    # Header height.
-    worksheet.row_dimensions[1].height = 36
+    worksheet.row_dimensions[1].height = 34
+    worksheet.auto_filter.ref = (
+        f"A1:{last_column_letter}{data_last_row}"
+    )
 
-    # Column widths similar to the Google Sheet.
-    if column_count >= 1:
-        worksheet.column_dimensions["A"].width = 55
-
-    if column_count >= 2:
-        worksheet.column_dimensions["B"].width = 48
-
-    if column_count >= 3:
-        worksheet.column_dimensions["C"].width = 22
+    preferred_widths = {
+        1: 55,
+        2: 48,
+        3: 22,
+    }
 
     for column_index in range(
-        4,
+        1,
         column_count + 1,
     ):
         column_letter = get_column_letter(
             column_index
         )
-
+        width = preferred_widths.get(
+            column_index,
+            24,
+        )
         worksheet.column_dimensions[
             column_letter
-        ].width = 24
+        ].width = width
 
-    # Add Excel table with built-in filters.
-    if headers:
-        last_column_letter = get_column_letter(
-            column_count
-        )
-
-        table_reference = (
-            f"A1:{last_column_letter}{row_count}"
-        )
-
+    if rows:
         table = Table(
             displayName="ImageClassificationHistory",
-            ref=table_reference,
+            ref=(
+                f"A1:{last_column_letter}"
+                f"{data_last_row}"
+            ),
         )
 
-        table_style = TableStyleInfo(
+        table.tableStyleInfo = TableStyleInfo(
             name="TableStyleMedium2",
             showFirstColumn=False,
             showLastColumn=False,
@@ -227,111 +305,17 @@ def create_history_xlsx(
             showColumnStripes=False,
         )
 
-        table.tableStyleInfo = table_style
         worksheet.add_table(table)
 
-        # The explicit fill keeps the header appearance
-        # similar to the web table and Google Sheet.
         for cell in worksheet[1]:
             cell.fill = header_fill
             cell.font = header_font
             cell.alignment = header_alignment
+            cell.border = cell_border
 
-    # Conditional formatting based on latest run.
-    if rows and len(headers) > 3:
-        latest_column_index = len(headers)
+    worksheet.print_title_rows = "1:1"
+    worksheet.sheet_view.showGridLines = False
 
-        latest_column_letter = get_column_letter(
-            latest_column_index
-        )
-
-        data_range = (
-            f"A2:"
-            f"{get_column_letter(column_count)}"
-            f"{row_count}"
-        )
-
-        green_fill = PatternFill(
-            fill_type="solid",
-            fgColor="D6EFD6",
-        )
-
-        red_fill = PatternFill(
-            fill_type="solid",
-            fgColor="F5D0D0",
-        )
-
-        yellow_fill = PatternFill(
-            fill_type="solid",
-            fgColor="FFEDAC",
-        )
-
-        # Match:
-        # latest result is not empty,
-        # is not an error,
-        # and equals expected status in column C.
-        green_formula = (
-            f'AND('
-            f'${latest_column_letter}2<>"",'
-            f'LEFT(${latest_column_letter}2,5)'
-            f'<>"שגיאה",'
-            f'$C2=${latest_column_letter}2'
-            f')'
-        )
-
-        worksheet.conditional_formatting.add(
-            data_range,
-            FormulaRule(
-                formula=[green_formula],
-                fill=green_fill,
-            ),
-        )
-
-        # Mismatch.
-        red_formula = (
-            f'AND('
-            f'${latest_column_letter}2<>"",'
-            f'LEFT(${latest_column_letter}2,5)'
-            f'<>"שגיאה",'
-            f'$C2<>${latest_column_letter}2'
-            f')'
-        )
-
-        worksheet.conditional_formatting.add(
-            data_range,
-            FormulaRule(
-                formula=[red_formula],
-                fill=red_fill,
-            ),
-        )
-
-        # Error.
-        yellow_formula = (
-            f'LEFT('
-            f'${latest_column_letter}2,5'
-            f')="שגיאה"'
-        )
-
-        worksheet.conditional_formatting.add(
-            data_range,
-            FormulaRule(
-                formula=[yellow_formula],
-                fill=yellow_fill,
-            ),
-        )
-
-    # Add an automatic filter even if the Excel table
-    # is not recognized by a specific spreadsheet program.
-    if headers:
-        last_column_letter = get_column_letter(
-            column_count
-        )
-
-        worksheet.auto_filter.ref = (
-            f"A1:{last_column_letter}{row_count}"
-        )
-
-    # Save to memory instead of creating a permanent file.
     output = BytesIO()
     workbook.save(output)
     output.seek(0)
@@ -508,42 +492,43 @@ def run_classification():
 
 @app.get("/history/download")
 def download_history():
+    """
+    Download the complete history as a formatted XLSX file.
+    """
+
     if not HISTORY_CSV.exists():
         flash(
             "עדיין אין היסטוריה להורדה.",
             "warning",
         )
-
         return redirect(url_for("index"))
 
     try:
-        headers, rows = read_history_csv(
-            HISTORY_CSV
-        )
-
-        if not headers or not rows:
-            flash(
-                "קובץ ההיסטוריה עדיין ריק.",
-                "warning",
+        with processing_lock:
+            headers, rows = read_history_csv(
+                HISTORY_CSV
             )
 
-            return redirect(url_for("index"))
+            if not headers or not rows:
+                flash(
+                    "קובץ ההיסטוריה עדיין ריק.",
+                    "warning",
+                )
+                return redirect(url_for("index"))
 
-        xlsx_file = create_history_xlsx(
-            headers=headers,
-            rows=rows,
-        )
+            xlsx_file = create_history_xlsx(
+                headers=headers,
+                rows=rows,
+            )
 
         timestamp = datetime.now().strftime(
-            "%Y-%m-%d_%H-%M-%S"
+            "%Y%m%d_%H%M%S"
         )
-
         filename = (
-            "image_classification_history_"
-            f"{timestamp}.xlsx"
+            f"image_results_{timestamp}.xlsx"
         )
 
-        return send_file(
+        response = send_file(
             xlsx_file,
             as_attachment=True,
             download_name=filename,
@@ -551,7 +536,17 @@ def download_history():
                 "application/vnd.openxmlformats-"
                 "officedocument.spreadsheetml.sheet"
             ),
+            max_age=0,
         )
+
+        response.headers["Cache-Control"] = (
+            "no-store, no-cache, must-revalidate, "
+            "max-age=0"
+        )
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+
+        return response
 
     except Exception as error:
         app.logger.exception(
@@ -562,8 +557,8 @@ def download_history():
             f"יצירת קובץ ה־XLSX נכשלה: {error}",
             "danger",
         )
-
         return redirect(url_for("index"))
+
 
 # ============================================================
 # Clear history
@@ -632,7 +627,7 @@ if __name__ == "__main__":
     app.run(
         host=os.getenv(
             "FLASK_HOST",
-            "127.0.0.1",
+            "0.0.0.0",
         ),
         port=int(
             os.getenv(
