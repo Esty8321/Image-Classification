@@ -1,15 +1,19 @@
 from __future__ import annotations
 
-import json
+import csv
 import os
 import secrets
-import shutil
 import threading
 import uuid
 from pathlib import Path
-from typing import Any
+from datetime import datetime
+from io import BytesIO
+from openpyxl import Workbook
+from openpyxl.formatting.rule import FormulaRule
+from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.table import Table, TableStyleInfo
 
-import gspread
 from dotenv import load_dotenv
 from flask import (
     Flask,
@@ -17,17 +21,12 @@ from flask import (
     redirect,
     render_template,
     request,
-    session,
+    send_file,
     url_for,
 )
-from google.auth.transport.requests import Request as GoogleRequest
-from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import Flow
 from werkzeug.utils import secure_filename
 
 from classifier_core import (
-    DEFAULT_GOOGLE_SHEET_TITLE,
-    create_google_sheet,
     merge_results_into_history,
     process_current_rows,
     read_history_csv,
@@ -36,16 +35,8 @@ from classifier_core import (
     save_json_backup,
 )
 
-load_dotenv()
-os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = os.getenv(
-    "OAUTHLIB_INSECURE_TRANSPORT",
-    "1",
-)
 
-os.environ["OAUTHLIB_RELAX_TOKEN_SCOPE"] = os.getenv(
-    "OAUTHLIB_RELAX_TOKEN_SCOPE",
-    "1",
-)
+load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
@@ -53,234 +44,412 @@ UPLOAD_DIR = BASE_DIR / "uploads"
 
 HISTORY_CSV = DATA_DIR / "image_results_history.csv"
 JSON_BACKUP = DATA_DIR / "image_results_history_backup.json"
-TOKEN_FILE = DATA_DIR / "google_token.json"
-CLIENT_SECRET_FILE = BASE_DIR / "client_secret.json"
 
-DATA_DIR.mkdir(parents=True, exist_ok=True)
-UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-
-ALLOWED_GOOGLE_EMAIL = os.getenv("ALLOWED_GOOGLE_EMAIL", "").strip().lower()
-MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "25"))
-GOOGLE_REDIRECT_URI = os.getenv(
-    "GOOGLE_REDIRECT_URI",
-    "http://127.0.0.1:5000/oauth2callback",
+DATA_DIR.mkdir(
+    parents=True,
+    exist_ok=True,
 )
 
-SCOPES = [
-    "openid",
-    "https://www.googleapis.com/auth/userinfo.email",
-    "https://www.googleapis.com/auth/drive.file",
-    "https://www.googleapis.com/auth/spreadsheets",
-]
+UPLOAD_DIR.mkdir(
+    parents=True,
+    exist_ok=True,
+)
+
+MAX_UPLOAD_MB = int(
+    os.getenv("MAX_UPLOAD_MB", "25")
+)
 
 app = Flask(__name__)
-app.secret_key = os.getenv("FLASK_SECRET_KEY") or secrets.token_hex(32)
-app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_MB * 1024 * 1024
 
-# One process at a time, so two clicks cannot corrupt the history CSV.
+app.secret_key = (
+    os.getenv("FLASK_SECRET_KEY")
+    or secrets.token_hex(32)
+)
+
+app.config["MAX_CONTENT_LENGTH"] = (
+    MAX_UPLOAD_MB * 1024 * 1024
+)
+
+# Prevent two processes from writing to the CSV at once.
 processing_lock = threading.Lock()
+
+
+def create_history_xlsx(
+    headers: list[str],
+    rows: list[dict[str, str]],
+) -> BytesIO:
+    """
+    Create a formatted XLSX workbook from the CSV history.
+
+    The workbook contains:
+    - RTL layout
+    - frozen header and first three columns
+    - filters
+    - styled headers
+    - column widths
+    - conditional formatting based on the latest result column
+    """
+
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet.title = "Results"
+
+    worksheet.sheet_view.rightToLeft = True
+
+    # Freeze the first row and the first three columns.
+    worksheet.freeze_panes = "D2"
+
+    # Header style.
+    header_fill = PatternFill(
+        fill_type="solid",
+        fgColor="2E5480",
+    )
+
+    header_font = Font(
+        color="FFFFFF",
+        bold=True,
+        size=11,
+    )
+
+    header_alignment = Alignment(
+        horizontal="center",
+        vertical="center",
+        wrap_text=True,
+    )
+
+    body_alignment = Alignment(
+        vertical="center",
+        wrap_text=True,
+    )
+
+    centered_alignment = Alignment(
+        horizontal="center",
+        vertical="center",
+        wrap_text=True,
+    )
+
+    url_alignment = Alignment(
+        horizontal="left",
+        vertical="center",
+        wrap_text=True,
+        readingOrder=1,
+    )
+
+    # Write headers.
+    for column_index, header in enumerate(
+        headers,
+        start=1,
+    ):
+        cell = worksheet.cell(
+            row=1,
+            column=column_index,
+            value=header,
+        )
+
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = header_alignment
+
+    # Write rows.
+    for row_index, row in enumerate(
+        rows,
+        start=2,
+    ):
+        for column_index, header in enumerate(
+            headers,
+            start=1,
+        ):
+            value = row.get(header, "")
+
+            cell = worksheet.cell(
+                row=row_index,
+                column=column_index,
+                value=value,
+            )
+
+            if column_index == 1:
+                cell.alignment = url_alignment
+
+            elif column_index >= 3:
+                cell.alignment = centered_alignment
+
+            else:
+                cell.alignment = body_alignment
+
+    row_count = max(len(rows) + 1, 2)
+    column_count = len(headers)
+
+    # Header height.
+    worksheet.row_dimensions[1].height = 36
+
+    # Column widths similar to the Google Sheet.
+    if column_count >= 1:
+        worksheet.column_dimensions["A"].width = 55
+
+    if column_count >= 2:
+        worksheet.column_dimensions["B"].width = 48
+
+    if column_count >= 3:
+        worksheet.column_dimensions["C"].width = 22
+
+    for column_index in range(
+        4,
+        column_count + 1,
+    ):
+        column_letter = get_column_letter(
+            column_index
+        )
+
+        worksheet.column_dimensions[
+            column_letter
+        ].width = 24
+
+    # Add Excel table with built-in filters.
+    if headers:
+        last_column_letter = get_column_letter(
+            column_count
+        )
+
+        table_reference = (
+            f"A1:{last_column_letter}{row_count}"
+        )
+
+        table = Table(
+            displayName="ImageClassificationHistory",
+            ref=table_reference,
+        )
+
+        table_style = TableStyleInfo(
+            name="TableStyleMedium2",
+            showFirstColumn=False,
+            showLastColumn=False,
+            showRowStripes=False,
+            showColumnStripes=False,
+        )
+
+        table.tableStyleInfo = table_style
+        worksheet.add_table(table)
+
+        # The explicit fill keeps the header appearance
+        # similar to the web table and Google Sheet.
+        for cell in worksheet[1]:
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = header_alignment
+
+    # Conditional formatting based on latest run.
+    if rows and len(headers) > 3:
+        latest_column_index = len(headers)
+
+        latest_column_letter = get_column_letter(
+            latest_column_index
+        )
+
+        data_range = (
+            f"A2:"
+            f"{get_column_letter(column_count)}"
+            f"{row_count}"
+        )
+
+        green_fill = PatternFill(
+            fill_type="solid",
+            fgColor="D6EFD6",
+        )
+
+        red_fill = PatternFill(
+            fill_type="solid",
+            fgColor="F5D0D0",
+        )
+
+        yellow_fill = PatternFill(
+            fill_type="solid",
+            fgColor="FFEDAC",
+        )
+
+        # Match:
+        # latest result is not empty,
+        # is not an error,
+        # and equals expected status in column C.
+        green_formula = (
+            f'AND('
+            f'${latest_column_letter}2<>"",'
+            f'LEFT(${latest_column_letter}2,5)'
+            f'<>"שגיאה",'
+            f'$C2=${latest_column_letter}2'
+            f')'
+        )
+
+        worksheet.conditional_formatting.add(
+            data_range,
+            FormulaRule(
+                formula=[green_formula],
+                fill=green_fill,
+            ),
+        )
+
+        # Mismatch.
+        red_formula = (
+            f'AND('
+            f'${latest_column_letter}2<>"",'
+            f'LEFT(${latest_column_letter}2,5)'
+            f'<>"שגיאה",'
+            f'$C2<>${latest_column_letter}2'
+            f')'
+        )
+
+        worksheet.conditional_formatting.add(
+            data_range,
+            FormulaRule(
+                formula=[red_formula],
+                fill=red_fill,
+            ),
+        )
+
+        # Error.
+        yellow_formula = (
+            f'LEFT('
+            f'${latest_column_letter}2,5'
+            f')="שגיאה"'
+        )
+
+        worksheet.conditional_formatting.add(
+            data_range,
+            FormulaRule(
+                formula=[yellow_formula],
+                fill=yellow_fill,
+            ),
+        )
+
+    # Add an automatic filter even if the Excel table
+    # is not recognized by a specific spreadsheet program.
+    if headers:
+        last_column_letter = get_column_letter(
+            column_count
+        )
+
+        worksheet.auto_filter.ref = (
+            f"A1:{last_column_letter}{row_count}"
+        )
+
+    # Save to memory instead of creating a permanent file.
+    output = BytesIO()
+    workbook.save(output)
+    output.seek(0)
+
+    return output
 
 
 def is_xlsx(filename: str) -> bool:
     return filename.lower().endswith(".xlsx")
 
 
-def load_saved_credentials() -> Credentials | None:
-    if not TOKEN_FILE.exists():
-        return None
-
+def load_history_for_display() -> tuple[
+    list[str],
+    list[dict[str, str]],
+]:
+    """
+    Load the existing CSV history for display in the browser.
+    """
     try:
-        info = json.loads(TOKEN_FILE.read_text(encoding="utf-8"))
-        credentials = Credentials.from_authorized_user_info(info, SCOPES)
+        return read_history_csv(HISTORY_CSV)
 
-        if credentials.expired and credentials.refresh_token:
-            credentials.refresh(GoogleRequest())
-            save_credentials(credentials)
+    except Exception as error:
+        app.logger.exception(
+            "Could not read history CSV"
+        )
 
-        if not credentials.valid:
-            return None
+        flash(
+            f"לא ניתן לקרוא את קובץ ההיסטוריה: {error}",
+            "danger",
+        )
 
-        return credentials
-
-    except Exception:
-        return None
-
-
-def save_credentials(credentials: Credentials) -> None:
-    TOKEN_FILE.write_text(credentials.to_json(), encoding="utf-8")
+        return [], []
 
 
-def google_client() -> gspread.Client:
-    credentials = load_saved_credentials()
-
-    if credentials is None:
-        raise RuntimeError("Google account is not connected")
-
-    return gspread.authorize(credentials)
-
-
-def require_google_connection():
-    if load_saved_credentials() is None:
-        flash("יש להתחבר לחשבון Google לפני הפעלת הבדיקה.", "warning")
-        return redirect(url_for("google_login"))
-
-    return None
-
-
-def fetch_connected_email(credentials: Credentials) -> str:
-    import requests
-
-    response = requests.get(
-        "https://www.googleapis.com/oauth2/v2/userinfo",
-        headers={"Authorization": f"Bearer {credentials.token}"},
-        timeout=20,
-    )
-    response.raise_for_status()
-    return str(response.json().get("email", "")).strip().lower()
-
+# ============================================================
+# Main page
+# ============================================================
 
 @app.get("/")
 def index():
-    connected = load_saved_credentials() is not None
+    headers, rows = load_history_for_display()
+
+    latest_result_column = ""
+
+    if len(headers) > 3:
+        latest_result_column = headers[-1]
+
     return render_template(
         "index.html",
-        connected=connected,
-        allowed_email=ALLOWED_GOOGLE_EMAIL,
-        history_exists=HISTORY_CSV.exists(),
+        headers=headers,
+        rows=rows,
+        latest_result_column=latest_result_column,
+        history_exists=bool(rows),
     )
 
 
-@app.get("/login/google")
-def google_login():
-    if not CLIENT_SECRET_FILE.exists():
-        flash(
-            "הקובץ client_secret.json חסר בתיקיית הפרויקט.",
-            "danger",
-        )
-        return redirect(url_for("index"))
-
-    # Create one PKCE verifier for this login attempt.
-    # It must be reused in the callback.
-    code_verifier = secrets.token_urlsafe(64)
-
-    flow = Flow.from_client_secrets_file(
-        str(CLIENT_SECRET_FILE),
-        scopes=SCOPES,
-        redirect_uri=GOOGLE_REDIRECT_URI,
-        code_verifier=code_verifier,
-    )
-
-    authorization_url, state = flow.authorization_url(
-        access_type="offline",
-        include_granted_scopes="true",
-        prompt="consent",
-    )
-
-    # Save both values in the Flask session so that the callback
-    # can recreate the same OAuth flow.
-    session["oauth_state"] = state
-    session["oauth_code_verifier"] = code_verifier
-
-    return redirect(authorization_url)
-
-@app.get("/oauth2callback")
-def oauth2callback():
-    expected_state = session.get("oauth_state")
-    code_verifier = session.get("oauth_code_verifier")
-
-    if not expected_state:
-        flash(
-            "אימות Google נכשל: חסר OAuth state.",
-            "danger",
-        )
-        return redirect(url_for("index"))
-
-    if request.args.get("state") != expected_state:
-        flash(
-            "אימות Google נכשל: state לא תקין.",
-            "danger",
-        )
-        return redirect(url_for("index"))
-
-    if not code_verifier:
-        flash(
-            "אימות Google נכשל: חסר PKCE code verifier. "
-            "יש להתחיל מחדש את ההתחברות.",
-            "danger",
-        )
-        return redirect(url_for("index"))
-
-    flow = Flow.from_client_secrets_file(
-        str(CLIENT_SECRET_FILE),
-        scopes=SCOPES,
-        state=expected_state,
-        redirect_uri=GOOGLE_REDIRECT_URI,
-        code_verifier=code_verifier,
-    )
-
-    flow.fetch_token(
-        authorization_response=request.url
-    )
-
-    credentials = flow.credentials
-    email = fetch_connected_email(credentials)
-
-    if (
-        ALLOWED_GOOGLE_EMAIL
-        and email != ALLOWED_GOOGLE_EMAIL
-    ):
-        session.pop("oauth_state", None)
-        session.pop("oauth_code_verifier", None)
-
-        flash(
-            "חשבון Google זה אינו מורשה להשתמש במערכת.",
-            "danger",
-        )
-        return redirect(url_for("index"))
-
-    save_credentials(credentials)
-
-    # These temporary OAuth values are no longer needed.
-    session.pop("oauth_state", None)
-    session.pop("oauth_code_verifier", None)
-
-    flash(
-        f"חשבון Google חובר בהצלחה: {email}",
-        "success",
-    )
-
-    return redirect(url_for("index"))
+# ============================================================
+# Run XLSX processing
+# ============================================================
 
 @app.post("/run")
 def run_classification():
-    redirect_response = require_google_connection()
-    if redirect_response is not None:
-        return redirect_response
+    uploaded_file = request.files.get(
+        "xlsx_file"
+    )
 
-    uploaded_file = request.files.get("xlsx_file")
+    if (
+        uploaded_file is None
+        or not uploaded_file.filename
+    ):
+        flash(
+            "לא נבחר קובץ XLSX.",
+            "danger",
+        )
 
-    if uploaded_file is None or not uploaded_file.filename:
-        flash("לא נבחר קובץ XLSX.", "danger")
         return redirect(url_for("index"))
 
     if not is_xlsx(uploaded_file.filename):
-        flash("ניתן להעלות קובץ XLSX בלבד.", "danger")
+        flash(
+            "ניתן להעלות קובץ XLSX בלבד.",
+            "danger",
+        )
+
         return redirect(url_for("index"))
 
-    safe_name = secure_filename(uploaded_file.filename) or "input.xlsx"
+    safe_name = (
+        secure_filename(uploaded_file.filename)
+        or "input.xlsx"
+    )
+
     run_id = uuid.uuid4().hex
-    upload_path = UPLOAD_DIR / f"{run_id}_{safe_name}"
+
+    upload_path = (
+        UPLOAD_DIR
+        / f"{run_id}_{safe_name}"
+    )
+
     uploaded_file.save(upload_path)
 
     try:
         with processing_lock:
-            rows = read_xlsx_rows(upload_path)
+            current_xlsx_rows = read_xlsx_rows(
+                upload_path
+            )
 
-            if not rows:
-                raise ValueError("לא נמצאו כתובות תקינות בקובץ")
+            if not current_xlsx_rows:
+                raise ValueError(
+                    "לא נמצאו כתובות תקינות בקובץ"
+                )
 
-            current_results = process_current_rows(rows)
-            existing_headers, existing_rows = read_history_csv(HISTORY_CSV)
+            current_results = process_current_rows(
+                current_xlsx_rows
+            )
+
+            (
+                existing_headers,
+                existing_rows,
+            ) = read_history_csv(HISTORY_CSV)
 
             (
                 merged_headers,
@@ -293,75 +462,189 @@ def run_classification():
             )
 
             save_history_csv(
-                HISTORY_CSV,
-                merged_headers,
-                merged_rows,
+                csv_path=HISTORY_CSV,
+                headers=merged_headers,
+                rows=merged_rows,
             )
 
             save_json_backup(
-                JSON_BACKUP,
-                merged_headers,
-                merged_rows,
-            )
-
-            client = google_client()
-
-            sheet_url = create_google_sheet(
+                output_path=JSON_BACKUP,
                 headers=merged_headers,
                 rows=merged_rows,
-                latest_result_column=current_run_column,
-                sheet_title=DEFAULT_GOOGLE_SHEET_TITLE,
-                client=client,
             )
 
-        return render_template(
-            "success.html",
-            sheet_url=sheet_url,
-            processed_count=len(current_results),
-            total_history=len(merged_rows),
+        flash(
+            (
+                "הבדיקה הסתיימה בהצלחה. "
+                f"עובדו {len(current_results)} כתובות. "
+                f"עמודת התוצאה החדשה: "
+                f"{current_run_column}"
+            ),
+            "success",
         )
 
+        return redirect(url_for("index"))
+
     except Exception as error:
-        app.logger.exception("Processing failed")
-        flash(f"התהליך נכשל: {error}", "danger")
+        app.logger.exception(
+            "Processing failed"
+        )
+
+        flash(
+            f"התהליך נכשל: {error}",
+            "danger",
+        )
+
         return redirect(url_for("index"))
 
     finally:
-        upload_path.unlink(missing_ok=True)
+        upload_path.unlink(
+            missing_ok=True
+        )
 
+# ============================================================
+# Download formatted XLSX
+# ============================================================
+
+@app.get("/history/download")
+def download_history():
+    if not HISTORY_CSV.exists():
+        flash(
+            "עדיין אין היסטוריה להורדה.",
+            "warning",
+        )
+
+        return redirect(url_for("index"))
+
+    try:
+        headers, rows = read_history_csv(
+            HISTORY_CSV
+        )
+
+        if not headers or not rows:
+            flash(
+                "קובץ ההיסטוריה עדיין ריק.",
+                "warning",
+            )
+
+            return redirect(url_for("index"))
+
+        xlsx_file = create_history_xlsx(
+            headers=headers,
+            rows=rows,
+        )
+
+        timestamp = datetime.now().strftime(
+            "%Y-%m-%d_%H-%M-%S"
+        )
+
+        filename = (
+            "image_classification_history_"
+            f"{timestamp}.xlsx"
+        )
+
+        return send_file(
+            xlsx_file,
+            as_attachment=True,
+            download_name=filename,
+            mimetype=(
+                "application/vnd.openxmlformats-"
+                "officedocument.spreadsheetml.sheet"
+            ),
+        )
+
+    except Exception as error:
+        app.logger.exception(
+            "Could not create XLSX history file"
+        )
+
+        flash(
+            f"יצירת קובץ ה־XLSX נכשלה: {error}",
+            "danger",
+        )
+
+        return redirect(url_for("index"))
+
+# ============================================================
+# Clear history
+# ============================================================
 
 @app.post("/history/clear")
 def clear_history():
-    confirmation = request.form.get("confirmation", "").strip()
+    confirmation = request.form.get(
+        "confirmation",
+        "",
+    ).strip()
 
     if confirmation != "DELETE":
-        flash("מחיקת ההיסטוריה בוטלה: האישור אינו תקין.", "warning")
+        flash(
+            (
+                "מחיקת ההיסטוריה בוטלה: "
+                "האישור אינו תקין."
+            ),
+            "warning",
+        )
+
         return redirect(url_for("index"))
 
     with processing_lock:
-        HISTORY_CSV.unlink(missing_ok=True)
-        JSON_BACKUP.unlink(missing_ok=True)
+        HISTORY_CSV.unlink(
+            missing_ok=True
+        )
 
-    flash("ההיסטוריה המקומית נמחקה. ההרצה הבאה תתחיל היסטוריה חדשה.", "success")
+        JSON_BACKUP.unlink(
+            missing_ok=True
+        )
+
+    flash(
+        (
+            "ההיסטוריה נמחקה. "
+            "ההרצה הבאה תתחיל היסטוריה חדשה."
+        ),
+        "success",
+    )
+
     return redirect(url_for("index"))
 
 
-@app.post("/google/disconnect")
-def disconnect_google():
-    TOKEN_FILE.unlink(missing_ok=True)
-    flash("חשבון Google נותק מהמערכת.", "success")
-    return redirect(url_for("index"))
-
+# ============================================================
+# File too large
+# ============================================================
 
 @app.errorhandler(413)
 def file_too_large(_error):
-    flash(f"הקובץ גדול מדי. הגודל המרבי הוא {MAX_UPLOAD_MB}MB.", "danger")
+    flash(
+        (
+            "הקובץ גדול מדי. "
+            f"הגודל המרבי הוא {MAX_UPLOAD_MB}MB."
+        ),
+        "danger",
+    )
+
     return redirect(url_for("index"))
 
 
+# ============================================================
+# Start server
+# ============================================================
+
 if __name__ == "__main__":
     app.run(
-        host=os.getenv("FLASK_HOST", "127.0.0.1"),
-        port=int(os.getenv("FLASK_PORT", "5000")),
-        debug=os.getenv("FLASK_DEBUG", "false").lower() == "true",
+        host=os.getenv(
+            "FLASK_HOST",
+            "127.0.0.1",
+        ),
+        port=int(
+            os.getenv(
+                "FLASK_PORT",
+                "5000",
+            )
+        ),
+        debug=(
+            os.getenv(
+                "FLASK_DEBUG",
+                "false",
+            ).lower()
+            == "true"
+        ),
     )

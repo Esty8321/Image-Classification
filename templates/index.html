@@ -1,55 +1,354 @@
 <!doctype html>
+
 <html lang="he" dir="rtl">
 <head>
     <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1"
+    >
+
     <title>מערכת בדיקת תמונות</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+
+    <link
+        rel="stylesheet"
+        href="{{ url_for('static', filename='style.css') }}"
+    >
 </head>
+
 <body>
-<main class="container">
-    <section class="card">
+
+<header class="top-header">
+    <div>
         <h1>מערכת בדיקת תמונות</h1>
-        <p>מעלים קובץ XLSX, מפעילים את הבדיקה ומקבלים Google Sheet חדש עם כל ההיסטוריה.</p>
 
-        {% with messages = get_flashed_messages(with_categories=true) %}
-            {% for category, message in messages %}
-                <div class="alert {{ category }}">{{ message }}</div>
-            {% endfor %}
-        {% endwith %}
+        <p>
+            העלאת XLSX, הפעלת הבדיקה
+            והצגת ההיסטוריה בטבלה מקומית.
+        </p>
+    </div>
+</header>
 
-        <div class="status-row">
-            <strong>חיבור Google:</strong>
-            {% if connected %}
-                <span class="ok">מחובר</span>
-                <form action="{{ url_for('disconnect_google') }}" method="post">
-                    <button class="secondary" type="submit">ניתוק Google</button>
-                </form>
-            {% else %}
-                <span class="bad">לא מחובר</span>
-                <a class="button secondary" href="{{ url_for('google_login') }}">התחברות ל-Google</a>
-            {% endif %}
+
+<main class="page-container">
+
+    <!-- Messages -->
+
+    {% with messages =
+        get_flashed_messages(with_categories=true)
+    %}
+
+        {% for category, message in messages %}
+
+            <div class="alert {{ category }}">
+                {{ message }}
+            </div>
+
+        {% endfor %}
+
+    {% endwith %}
+
+
+    <!-- Upload section -->
+
+    <section class="card upload-card">
+
+        <h2>הפעלת בדיקה חדשה</h2>
+
+        <form
+            action="{{ url_for('run_classification') }}"
+            method="post"
+            enctype="multipart/form-data"
+        >
+
+            <label for="xlsx_file">
+                בחירת קובץ XLSX
+            </label>
+
+            <input
+                id="xlsx_file"
+                name="xlsx_file"
+                type="file"
+                accept=".xlsx"
+                required
+            >
+
+            <button
+                id="run-button"
+                type="submit"
+            >
+                הפעלת הבדיקה
+            </button>
+
+        </form>
+
+        <div
+            id="processing-message"
+            class="processing-message hidden"
+        >
+            הבדיקה פועלת. נא להמתין ולא לסגור את החלון.
         </div>
 
-        <form action="{{ url_for('run_classification') }}" method="post" enctype="multipart/form-data">
-            <label for="xlsx_file">קובץ XLSX</label>
-            <input id="xlsx_file" name="xlsx_file" type="file" accept=".xlsx" required>
-            <button type="submit" {% if not connected %}disabled{% endif %}>
-                הפעלת הבדיקה ויצירת Google Sheet
-            </button>
-        </form>
     </section>
 
-    <section class="card danger-zone">
-        <h2>מחיקת היסטוריה</h2>
-        <p>הפעולה מוחקת את קובץ ה-CSV ואת גיבוי ה-JSON המקומיים בלבד. Google Sheets שכבר נוצרו אינם נמחקים.</p>
-        <form action="{{ url_for('clear_history') }}" method="post"
-              onsubmit="return confirm('למחוק את כל ההיסטוריה המקומית?');">
-            <label for="confirmation">יש להקליד DELETE לאישור</label>
-            <input id="confirmation" name="confirmation" autocomplete="off" required>
-            <button class="danger" type="submit">מחיקת היסטוריה</button>
-        </form>
+
+    <!-- History table -->
+
+    <section class="card table-card">
+
+        <div class="table-toolbar">
+
+            <div>
+                <h2>היסטוריית תוצאות</h2>
+
+                <p>
+                    מספר שורות:
+                    <strong>{{ rows|length }}</strong>
+                </p>
+            </div>
+
+            <div class="toolbar-buttons">
+
+                {% if history_exists %}
+
+                    <a
+                        class="button secondary"
+                        href="{{ url_for('download_history') }}"
+                    >
+                       הורדת טבלת Excel
+                    </a>
+
+                {% endif %}
+
+            </div>
+
+        </div>
+
+
+        {% if rows and headers %}
+
+            <div class="search-area">
+
+                <label for="table-search">
+                    חיפוש בטבלה
+                </label>
+
+                <input
+                    id="table-search"
+                    type="search"
+                    placeholder="הקלידי כתובת, תיאור או סטטוס"
+                >
+
+            </div>
+
+
+            <div class="table-wrapper">
+
+                <table id="results-table">
+
+                    <thead>
+                        <tr>
+
+                            {% for header in headers %}
+
+                                <th>
+                                    {{ header }}
+                                </th>
+
+                            {% endfor %}
+
+                        </tr>
+                    </thead>
+
+
+                    <tbody>
+
+                        {% for row in rows %}
+
+                            {% set expected_status =
+                                row.get('סטטוס צפוי', '')
+                            %}
+
+                            {% set actual_status =
+                                row.get(
+                                    latest_result_column,
+                                    ''
+                                )
+                            %}
+
+                            {% set row_class = '' %}
+
+                            {% if actual_status.startswith('שגיאה') %}
+
+                                {% set row_class = 'error-row' %}
+
+                            {% elif actual_status
+                                and expected_status == actual_status
+                            %}
+
+                                {% set row_class = 'match-row' %}
+
+                            {% elif actual_status %}
+
+                                {% set row_class = 'mismatch-row' %}
+
+                            {% endif %}
+
+
+                            <tr class="{{ row_class }}">
+
+                                {% for header in headers %}
+
+                                    <td
+                                        {% if loop.index == 1 %}
+                                            class="url-cell"
+                                        {% endif %}
+                                    >
+                                        {{ row.get(header, '') }}
+                                    </td>
+
+                                {% endfor %}
+
+                            </tr>
+
+                        {% endfor %}
+
+                    </tbody>
+
+                </table>
+
+            </div>
+
+        {% else %}
+
+            <div class="empty-state">
+
+                <h3>עדיין אין תוצאות</h3>
+
+                <p>
+                    העלי קובץ XLSX והפעילי את הבדיקה.
+                </p>
+
+            </div>
+
+        {% endif %}
+
     </section>
+
+
+    <!-- Clear history -->
+
+    <section class="card danger-zone">
+
+        <h2>מחיקת היסטוריה</h2>
+
+        <p>
+            פעולה זו מוחקת את קובץ ה־CSV
+            ואת גיבוי ה־JSON המקומיים.
+        </p>
+
+        <form
+            action="{{ url_for('clear_history') }}"
+            method="post"
+            onsubmit="
+                return confirm(
+                    'האם למחוק את כל ההיסטוריה?'
+                );
+            "
+        >
+
+            <label for="confirmation">
+                יש להקליד DELETE לאישור
+            </label>
+
+            <input
+                id="confirmation"
+                name="confirmation"
+                autocomplete="off"
+                required
+            >
+
+            <button
+                class="danger"
+                type="submit"
+            >
+                מחיקת היסטוריה
+            </button>
+
+        </form>
+
+    </section>
+
 </main>
+
+
+<script>
+    const uploadForm = document.querySelector(
+        '.upload-card form'
+    );
+
+    const runButton = document.getElementById(
+        'run-button'
+    );
+
+    const processingMessage = document.getElementById(
+        'processing-message'
+    );
+
+    if (uploadForm) {
+        uploadForm.addEventListener(
+            'submit',
+            function () {
+                runButton.disabled = true;
+                runButton.textContent = 'הבדיקה פועלת...';
+
+                processingMessage.classList.remove(
+                    'hidden'
+                );
+            }
+        );
+    }
+
+
+    const searchInput = document.getElementById(
+        'table-search'
+    );
+
+    const resultsTable = document.getElementById(
+        'results-table'
+    );
+
+    if (searchInput && resultsTable) {
+        searchInput.addEventListener(
+            'input',
+            function () {
+                const searchText = (
+                    searchInput.value
+                    .trim()
+                    .toLowerCase()
+                );
+
+                const rows = resultsTable.querySelectorAll(
+                    'tbody tr'
+                );
+
+                rows.forEach(function (row) {
+                    const rowText = (
+                        row.textContent
+                        .toLowerCase()
+                    );
+
+                    row.style.display = (
+                        rowText.includes(searchText)
+                        ? ''
+                        : 'none'
+                    );
+                });
+            }
+        );
+    }
+</script>
+
 </body>
 </html>
