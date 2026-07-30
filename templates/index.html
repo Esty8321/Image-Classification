@@ -5,94 +5,507 @@
 <head>
     <meta charset="utf-8">
 
-    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1"
+    >
 
     <title>מערכת בדיקת תמונות</title>
 
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link
+        rel="stylesheet"
+        href="{{ url_for('static', filename='style.css') }}"
+    >
 </head>
 
 <body>
 
-    <header class="top-header">
-        <div>
-            <h1>מערכת בדיקת תמונות</h1>
+    {% set stats = namespace(
+        matches=0,
+        mismatches=0,
+        errors=0,
+        pending=0
+    ) %}
 
-            <p>
-                העלאת XLSX, הפעלת הבדיקה
-                והצגת ההיסטוריה בטבלה מקומית.
-            </p>
+    {% for row in rows %}
+
+        {% set expected_status =
+            row.get('סטטוס צפוי', '')
+        %}
+
+        {% set actual_status =
+            row.get(latest_result_column, '')
+        %}
+
+        {% if actual_status.startswith('שגיאה') %}
+
+            {% set stats.errors = stats.errors + 1 %}
+
+        {% elif actual_status
+            and expected_status == actual_status
+        %}
+
+            {% set stats.matches = stats.matches + 1 %}
+
+        {% elif actual_status %}
+
+            {% set stats.mismatches =
+                stats.mismatches + 1
+            %}
+
+        {% else %}
+
+            {% set stats.pending = stats.pending + 1 %}
+
+        {% endif %}
+
+    {% endfor %}
+
+
+    <!-- ======================================================
+         Main header
+         ====================================================== -->
+
+    <header class="top-header">
+
+        <div class="header-content">
+
+            <div class="header-title-area">
+
+                <div class="header-icon" aria-hidden="true">
+                    ✓
+                </div>
+
+                <div>
+                    <h1>מערכת בדיקת תמונות</h1>
+
+                    <p>
+                        העלאת קובץ, הפעלת בדיקה
+                        וצפייה בהיסטוריית התוצאות
+                        במקום אחד.
+                    </p>
+                </div>
+
+            </div>
+
+            {% if rows %}
+
+            <div class="header-status">
+
+                <span class="status-dot"></span>
+
+                <span>
+                    קיימות
+                    <strong>{{ rows|length }}</strong>
+                    תוצאות בהיסטוריה
+                </span>
+
+            </div>
+
+            {% endif %}
+
         </div>
+
     </header>
 
 
     <main class="page-container">
 
-        <!-- Messages -->
+        <!-- ==================================================
+             Flash messages
+             ================================================== -->
 
-        {% with messages =
-        get_flashed_messages(with_categories=true)
-        %}
+        <div class="messages-container">
 
-        {% for category, message in messages %}
+            {% with messages =
+                get_flashed_messages(
+                    with_categories=true
+                )
+            %}
 
-        <div class="alert {{ category }}">
-            {{ message }}
+                {% for category, message in messages %}
+
+                <div
+                    class="alert {{ category }}"
+                    role="alert"
+                >
+
+                    <div class="alert-icon">
+                        {% if category == 'success' %}
+                            ✓
+                        {% elif category == 'warning' %}
+                            !
+                        {% else %}
+                            ×
+                        {% endif %}
+                    </div>
+
+                    <div class="alert-text">
+                        {{ message }}
+                    </div>
+
+                    <button
+                        class="alert-close"
+                        type="button"
+                        aria-label="סגירת הודעה"
+                    >
+                        ×
+                    </button>
+
+                </div>
+
+                {% endfor %}
+
+            {% endwith %}
+
         </div>
 
-        {% endfor %}
 
-        {% endwith %}
-
-
-        <!-- Upload section -->
+        <!-- ==================================================
+             Upload area
+             ================================================== -->
 
         <section class="card upload-card">
 
-            <h2>הפעלת בדיקה חדשה</h2>
+            <div class="section-heading">
 
-            <form action="{{ url_for('run_classification') }}" method="post" enctype="multipart/form-data">
+                <div class="section-number">
+                    1
+                </div>
 
-                <label for="xlsx_file">
-                    בחירת קובץ XLSX
-                </label>
+                <div>
+                    <h2>הפעלת בדיקה חדשה</h2>
 
-                <input id="xlsx_file" name="xlsx_file" type="file" accept=".xlsx" required>
+                    <p>
+                        בחרי קובץ Excel המכיל את הנתונים לבדיקה.
+                    </p>
+                </div>
 
-                <button id="run-button" type="submit">
-                    הפעלת הבדיקה
-                </button>
+            </div>
+
+
+            <form
+                id="upload-form"
+                action="{{ url_for('run_classification') }}"
+                method="post"
+                enctype="multipart/form-data"
+            >
+
+                <div
+                    id="upload-drop-zone"
+                    class="upload-drop-zone"
+                    tabindex="0"
+                    role="button"
+                    aria-label="בחירת קובץ Excel"
+                >
+
+                    <input
+                        id="xlsx_file"
+                        name="xlsx_file"
+                        type="file"
+                        accept=".xlsx"
+                        required
+                    >
+
+                    <div class="upload-main-icon">
+                        ⇧
+                    </div>
+
+                    <div class="upload-main-text">
+                        גררי לכאן קובץ Excel
+                    </div>
+
+                    <div class="upload-secondary-text">
+                        או לחצי לבחירת קובץ מהמחשב
+                    </div>
+
+                    <div
+                        id="selected-file"
+                        class="selected-file hidden"
+                    >
+
+                        <span class="selected-file-icon">
+                            ✓
+                        </span>
+
+                        <span id="selected-file-name"></span>
+
+                        <button
+                            id="remove-selected-file"
+                            class="remove-file-button"
+                            type="button"
+                            aria-label="הסרת הקובץ"
+                        >
+                            ×
+                        </button>
+
+                    </div>
+
+                </div>
+
+
+                <div class="upload-actions">
+
+                    <div class="upload-help">
+
+                        <strong>לפני ההפעלה:</strong>
+
+                        ודאי שהקובץ הוא בפורמט XLSX
+                        ושהעמודות הנדרשות קיימות בו.
+
+                    </div>
+
+                    <button
+                        id="run-button"
+                        class="primary-action"
+                        type="submit"
+                    >
+
+                        <span class="button-icon">
+                            ▶
+                        </span>
+
+                        <span id="run-button-text">
+                            הפעלת הבדיקה
+                        </span>
+
+                    </button>
+
+                </div>
 
             </form>
 
-            <div id="processing-message" class="processing-message hidden">
-                הבדיקה פועלת. נא להמתין ולא לסגור את החלון.
+
+            <div
+                id="processing-message"
+                class="processing-panel hidden"
+                role="status"
+                aria-live="polite"
+            >
+
+                <div class="loading-spinner"></div>
+
+                <div>
+
+                    <strong>
+                        הבדיקה פועלת כעת
+                    </strong>
+
+                    <p>
+                        אין לסגור את החלון עד לסיום התהליך.
+                        התוצאות יוצגו כאן באופן אוטומטי.
+                    </p>
+
+                </div>
+
             </div>
 
         </section>
 
 
-        <!-- History table -->
+        <!-- ==================================================
+             Results history
+             ================================================== -->
 
         <section class="card table-card">
 
-            <div class="table-toolbar">
+            <div class="section-heading table-section-heading">
+
+                <div class="section-number">
+                    2
+                </div>
 
                 <div>
                     <h2>היסטוריית תוצאות</h2>
 
                     <p>
-                        מספר שורות:
-                        <strong>{{ rows|length }}</strong>
+                        חיפוש, סינון וצפייה בתוצאות קודמות.
                     </p>
                 </div>
 
-                <div class="toolbar-buttons">
+            </div>
+
+
+            {% if rows and headers %}
+
+            <!-- Summary cards -->
+
+            <div class="summary-grid">
+
+                <div class="summary-card summary-total">
+
+                    <div class="summary-icon">
+                        Σ
+                    </div>
+
+                    <div>
+                        <span class="summary-label">
+                            סך הכול
+                        </span>
+
+                        <strong class="summary-number">
+                            {{ rows|length }}
+                        </strong>
+                    </div>
+
+                </div>
+
+
+                <div class="summary-card summary-match">
+
+                    <div class="summary-icon">
+                        ✓
+                    </div>
+
+                    <div>
+                        <span class="summary-label">
+                            התאמות
+                        </span>
+
+                        <strong class="summary-number">
+                            {{ stats.matches }}
+                        </strong>
+                    </div>
+
+                </div>
+
+
+                <div class="summary-card summary-mismatch">
+
+                    <div class="summary-icon">
+                        ≠
+                    </div>
+
+                    <div>
+                        <span class="summary-label">
+                            אי־התאמות
+                        </span>
+
+                        <strong class="summary-number">
+                            {{ stats.mismatches }}
+                        </strong>
+                    </div>
+
+                </div>
+
+
+                <div class="summary-card summary-error">
+
+                    <div class="summary-icon">
+                        !
+                    </div>
+
+                    <div>
+                        <span class="summary-label">
+                            שגיאות
+                        </span>
+
+                        <strong class="summary-number">
+                            {{ stats.errors }}
+                        </strong>
+                    </div>
+
+                </div>
+
+            </div>
+
+
+            <!-- Search and filters -->
+
+            <div class="table-controls">
+
+                <div class="search-control">
+
+                    <label for="table-search">
+                        חיפוש בטבלה
+                    </label>
+
+                    <div class="search-input-wrapper">
+
+                        <span
+                            class="search-icon"
+                            aria-hidden="true"
+                        >
+                            ⌕
+                        </span>
+
+                        <input
+                            id="table-search"
+                            type="search"
+                            placeholder="חיפוש לפי כתובת, תיאור או סטטוס"
+                            autocomplete="off"
+                        >
+
+                        <button
+                            id="clear-search"
+                            class="clear-search-button hidden"
+                            type="button"
+                            aria-label="ניקוי החיפוש"
+                        >
+                            ×
+                        </button>
+
+                    </div>
+
+                </div>
+
+
+                <div class="filter-control">
+
+                    <label for="status-filter">
+                        סינון לפי תוצאה
+                    </label>
+
+                    <select id="status-filter">
+
+                        <option value="all">
+                            כל התוצאות
+                        </option>
+
+                        <option value="match">
+                            התאמות בלבד
+                        </option>
+
+                        <option value="mismatch">
+                            אי־התאמות בלבד
+                        </option>
+
+                        <option value="error">
+                            שגיאות בלבד
+                        </option>
+
+                        <option value="pending">
+                            ללא תוצאה
+                        </option>
+
+                    </select>
+
+                </div>
+
+
+                <div class="controls-actions">
+
+                    <button
+                        id="reset-filters"
+                        class="button light-button"
+                        type="button"
+                    >
+                        איפוס מסננים
+                    </button>
 
                     {% if history_exists %}
 
-                    <a class="button secondary" href="{{ url_for('download_history') }}">
-                        הורדת טבלת Excel
+                    <a
+                        class="button download-button"
+                        href="{{ url_for('download_history') }}"
+                    >
+
+                        <span aria-hidden="true">
+                            ↓
+                        </span>
+
+                        הורדת Excel
+
                     </a>
 
                     {% endif %}
@@ -102,35 +515,76 @@
             </div>
 
 
-            {% if rows and headers %}
+            <div class="results-info">
 
-            <div class="search-area">
+                <div>
 
-                <label for="table-search">
-                    חיפוש בטבלה
-                </label>
+                    מוצגות כעת
 
-                <input id="table-search" type="search" placeholder="הקלידי כתובת, תיאור או סטטוס">
+                    <strong id="visible-row-count">
+                        {{ rows|length }}
+                    </strong>
+
+                    מתוך
+
+                    <strong>
+                        {{ rows|length }}
+                    </strong>
+
+                    תוצאות
+
+                </div>
+
+                <div class="color-legend">
+
+                    <span class="legend-item">
+                        <span class="legend-color match-color"></span>
+                        התאמה
+                    </span>
+
+                    <span class="legend-item">
+                        <span class="legend-color mismatch-color"></span>
+                        אי־התאמה
+                    </span>
+
+                    <span class="legend-item">
+                        <span class="legend-color error-color"></span>
+                        שגיאה
+                    </span>
+
+                </div>
 
             </div>
 
+
+            <!-- Table -->
 
             <div class="table-wrapper">
 
                 <table id="results-table">
 
                     <thead>
+
                         <tr>
 
                             {% for header in headers %}
 
-                            <th>
-                                {{ header }}
+                            <th
+                                {% if loop.index == 1 %}
+                                    class="sticky-url-column"
+                                {% endif %}
+                            >
+
+                                <span class="header-content">
+                                    {{ header }}
+                                </span>
+
                             </th>
 
                             {% endfor %}
 
                         </tr>
+
                     </thead>
 
 
@@ -138,98 +592,161 @@
 
                         {% for row in rows %}
 
-                        {% set expected_status =
-                        row.get('סטטוס צפוי', '')
-                        %}
+                            {% set expected_status =
+                                row.get(
+                                    'סטטוס צפוי',
+                                    ''
+                                )
+                            %}
 
-                        {% set actual_status =
-                        row.get(
-                        latest_result_column,
-                        ''
-                        )
-                        %}
+                            {% set actual_status =
+                                row.get(
+                                    latest_result_column,
+                                    ''
+                                )
+                            %}
 
-                        {% set row_class = '' %}
-
-                        {% if actual_status.startswith('שגיאה') %}
-
-                        {% set row_class = 'error-row' %}
-
-                        {% elif actual_status
-                        and expected_status == actual_status
-                        %}
-
-                        {% set row_class = 'match-row' %}
-
-                        {% elif actual_status %}
-
-                        {% set row_class = 'mismatch-row' %}
-
-                        {% endif %}
+                            {% set row_class = '' %}
+                            {% set row_status = 'pending' %}
 
 
-                        <tr class="{{ row_class }}">
+                            {% if actual_status.startswith('שגיאה') %}
 
-                            {% for header in headers %}
+                                {% set row_class = 'error-row' %}
+                                {% set row_status = 'error' %}
 
-                            <td {% if loop.index==1 %} class="url-cell" {% endif %}>
-                                {{ row.get(header, '') }}
-                            </td>
+                            {% elif actual_status
+                                and expected_status == actual_status
+                            %}
 
-                            {% endfor %}
+                                {% set row_class = 'match-row' %}
+                                {% set row_status = 'match' %}
 
-                        </tr>
+                            {% elif actual_status %}
+
+                                {% set row_class = 'mismatch-row' %}
+                                {% set row_status = 'mismatch' %}
+
+                            {% endif %}
+
+
+                            <tr
+                                class="result-row {{ row_class }}"
+                                data-status="{{ row_status }}"
+                            >
+
+                                {% for header in headers %}
+
+                                <td
+                                    {% if loop.index == 1 %}
+                                        class="url-cell sticky-url-column"
+                                    {% endif %}
+                                >
+                                    {{ row.get(header, '') }}
+                                </td>
+
+                                {% endfor %}
+
+                            </tr>
 
                         {% endfor %}
+
 
                         <tr class="percentage-summary-row">
 
                             {% for header in headers %}
 
-                            {% if loop.index == 1 %}
+                                {% if loop.index == 1 %}
 
-                            <td></td>
+                                    <td
+                                        class="sticky-url-column"
+                                    ></td>
 
-                            {% elif loop.index == 2 %}
+                                {% elif loop.index == 2 %}
 
-                            <td class="percentage-summary-label">
-                                אחוז אי־התאמה
-                            </td>
+                                    <td class="percentage-summary-label">
+                                        אחוז אי־התאמה
+                                    </td>
 
-                            {% elif loop.index == 3 %}
+                                {% elif loop.index == 3 %}
 
-                            <td></td>
+                                    <td></td>
 
-                            {% else %}
+                                {% else %}
 
-                            <td class="percentage-summary-value">
-                                {{
-                                mismatch_summaries
-                                .get(header, {})
-                                .get('display', '—')
-                                }}
-                            </td>
+                                    <td class="percentage-summary-value">
 
-                            {% endif %}
+                                        {{
+                                            mismatch_summaries
+                                            .get(header, {})
+                                            .get('display', '—')
+                                        }}
+
+                                    </td>
+
+                                {% endif %}
 
                             {% endfor %}
 
                         </tr>
+
                     </tbody>
 
                 </table>
 
             </div>
 
+
+            <div
+                id="no-filter-results"
+                class="no-filter-results hidden"
+            >
+
+                <div class="empty-icon">
+                    ⌕
+                </div>
+
+                <h3>
+                    לא נמצאו תוצאות
+                </h3>
+
+                <p>
+                    נסי לשנות את החיפוש או את הסינון.
+                </p>
+
+                <button
+                    id="empty-reset-button"
+                    class="button"
+                    type="button"
+                >
+                    הצגת כל התוצאות
+                </button>
+
+            </div>
+
+
             {% else %}
 
             <div class="empty-state">
 
+                <div class="empty-icon">
+                    ⇧
+                </div>
+
                 <h3>עדיין אין תוצאות</h3>
 
                 <p>
-                    העלי קובץ XLSX והפעילי את הבדיקה.
+                    בחרי קובץ Excel באזור העליון
+                    והפעילי את הבדיקה הראשונה.
                 </p>
+
+                <button
+                    id="go-to-upload"
+                    class="button"
+                    type="button"
+                >
+                    בחירת קובץ
+                </button>
 
             </div>
 
@@ -238,34 +755,83 @@
         </section>
 
 
-        <!-- Clear history -->
+        <!-- ==================================================
+             Clear history
+             ================================================== -->
 
         <section class="card danger-zone">
 
-            <h2>מחיקת היסטוריה</h2>
+            <details>
 
-            <p>
-                פעולה זו מוחקת את קובץ ה־CSV
-                ואת גיבוי ה־JSON המקומיים.
-            </p>
+                <summary>
 
-            <form action="{{ url_for('clear_history') }}" method="post" onsubmit="
-                return confirm(
-                    'האם למחוק את כל ההיסטוריה?'
-                );
-            ">
+                    <span class="danger-summary-icon">
+                        !
+                    </span>
 
-                <label for="confirmation">
-                    יש להקליד DELETE לאישור
-                </label>
+                    <span>
+                        מחיקת היסטוריה
+                    </span>
 
-                <input id="confirmation" name="confirmation" autocomplete="off" required>
+                    <span class="summary-hint">
+                        פתיחת אפשרויות מחיקה
+                    </span>
 
-                <button class="danger" type="submit">
-                    מחיקת היסטוריה
-                </button>
+                </summary>
 
-            </form>
+
+                <div class="danger-content">
+
+                    <div>
+
+                        <h2>מחיקת כל ההיסטוריה</h2>
+
+                        <p>
+                            פעולה זו מוחקת את קובץ ה־CSV
+                            ואת גיבוי ה־JSON המקומיים.
+                            לא ניתן לבטל את הפעולה לאחר ביצועה.
+                        </p>
+
+                    </div>
+
+
+                    <form
+                        action="{{ url_for('clear_history') }}"
+                        method="post"
+                        onsubmit="
+                            return confirm(
+                                'האם למחוק את כל ההיסטוריה?'
+                            );
+                        "
+                    >
+
+                        <label for="confirmation">
+                            הקלידי DELETE לאישור
+                        </label>
+
+                        <input
+                            id="confirmation"
+                            name="confirmation"
+                            type="text"
+                            autocomplete="off"
+                            placeholder="DELETE"
+                            required
+                        >
+
+                        <button
+                            id="delete-history-button"
+                            class="danger"
+                            type="submit"
+                            disabled
+                        >
+                            מחיקת כל ההיסטוריה
+                        </button>
+
+                    </form>
+
+                </div>
+
+            </details>
 
         </section>
 
@@ -273,70 +839,624 @@
 
 
     <script>
-        const uploadForm = document.querySelector(
-            '.upload-card form'
-        );
+        document.addEventListener(
+            'DOMContentLoaded',
+            function () {
 
-        const runButton = document.getElementById(
-            'run-button'
-        );
+                /* =============================================
+                   Flash messages
+                   ============================================= */
 
-        const processingMessage = document.getElementById(
-            'processing-message'
-        );
+                const alertCloseButtons =
+                    document.querySelectorAll(
+                        '.alert-close'
+                    );
 
-        if (uploadForm) {
-            uploadForm.addEventListener(
-                'submit',
-                function () {
-                    runButton.disabled = true;
-                    runButton.textContent = 'הבדיקה פועלת...';
+                alertCloseButtons.forEach(
+                    function (button) {
 
-                    processingMessage.classList.remove(
+                        button.addEventListener(
+                            'click',
+                            function () {
+                                button
+                                    .closest('.alert')
+                                    .remove();
+                            }
+                        );
+
+                    }
+                );
+
+
+                /* =============================================
+                   File upload
+                   ============================================= */
+
+                const uploadForm =
+                    document.getElementById(
+                        'upload-form'
+                    );
+
+                const fileInput =
+                    document.getElementById(
+                        'xlsx_file'
+                    );
+
+                const dropZone =
+                    document.getElementById(
+                        'upload-drop-zone'
+                    );
+
+                const selectedFile =
+                    document.getElementById(
+                        'selected-file'
+                    );
+
+                const selectedFileName =
+                    document.getElementById(
+                        'selected-file-name'
+                    );
+
+                const removeSelectedFile =
+                    document.getElementById(
+                        'remove-selected-file'
+                    );
+
+                const runButton =
+                    document.getElementById(
+                        'run-button'
+                    );
+
+                const runButtonText =
+                    document.getElementById(
+                        'run-button-text'
+                    );
+
+                const processingMessage =
+                    document.getElementById(
+                        'processing-message'
+                    );
+
+
+                function showSelectedFile(file) {
+
+                    if (!file) {
+                        return;
+                    }
+
+                    selectedFileName.textContent =
+                        file.name;
+
+                    selectedFile.classList.remove(
                         'hidden'
                     );
-                }
-            );
-        }
 
-
-        const searchInput = document.getElementById(
-            'table-search'
-        );
-
-        const resultsTable = document.getElementById(
-            'results-table'
-        );
-
-        if (searchInput && resultsTable) {
-            searchInput.addEventListener(
-                'input',
-                function () {
-                    const searchText = (
-                        searchInput.value
-                            .trim()
-                            .toLowerCase()
+                    dropZone.classList.add(
+                        'has-file'
                     );
 
-                    const rows = resultsTable.querySelectorAll(
-                        'tbody tr'
+                }
+
+
+                function clearSelectedFile() {
+
+                    fileInput.value = '';
+
+                    selectedFile.classList.add(
+                        'hidden'
                     );
 
-                    rows.forEach(function (row) {
-                        const rowText = (
-                            row.textContent
-                                .toLowerCase()
+                    selectedFileName.textContent = '';
+
+                    dropZone.classList.remove(
+                        'has-file'
+                    );
+
+                }
+
+
+                if (dropZone && fileInput) {
+
+                    dropZone.addEventListener(
+                        'click',
+                        function (event) {
+
+                            if (
+                                event.target !==
+                                removeSelectedFile
+                            ) {
+                                fileInput.click();
+                            }
+
+                        }
+                    );
+
+
+                    dropZone.addEventListener(
+                        'keydown',
+                        function (event) {
+
+                            if (
+                                event.key === 'Enter' ||
+                                event.key === ' '
+                            ) {
+                                event.preventDefault();
+                                fileInput.click();
+                            }
+
+                        }
+                    );
+
+
+                    fileInput.addEventListener(
+                        'change',
+                        function () {
+
+                            if (
+                                fileInput.files &&
+                                fileInput.files[0]
+                            ) {
+                                showSelectedFile(
+                                    fileInput.files[0]
+                                );
+                            }
+
+                        }
+                    );
+
+
+                    [
+                        'dragenter',
+                        'dragover'
+                    ].forEach(
+                        function (eventName) {
+
+                            dropZone.addEventListener(
+                                eventName,
+                                function (event) {
+
+                                    event.preventDefault();
+
+                                    dropZone.classList.add(
+                                        'drag-active'
+                                    );
+
+                                }
+                            );
+
+                        }
+                    );
+
+
+                    [
+                        'dragleave',
+                        'drop'
+                    ].forEach(
+                        function (eventName) {
+
+                            dropZone.addEventListener(
+                                eventName,
+                                function (event) {
+
+                                    event.preventDefault();
+
+                                    dropZone.classList.remove(
+                                        'drag-active'
+                                    );
+
+                                }
+                            );
+
+                        }
+                    );
+
+
+                    dropZone.addEventListener(
+                        'drop',
+                        function (event) {
+
+                            const files =
+                                event
+                                    .dataTransfer
+                                    .files;
+
+                            if (!files.length) {
+                                return;
+                            }
+
+                            const file = files[0];
+
+                            if (
+                                !file.name
+                                    .toLowerCase()
+                                    .endsWith('.xlsx')
+                            ) {
+
+                                window.alert(
+                                    'יש לבחור קובץ בפורמט XLSX בלבד.'
+                                );
+
+                                return;
+                            }
+
+                            const dataTransfer =
+                                new DataTransfer();
+
+                            dataTransfer.items.add(
+                                file
+                            );
+
+                            fileInput.files =
+                                dataTransfer.files;
+
+                            showSelectedFile(file);
+
+                        }
+                    );
+
+                }
+
+
+                if (removeSelectedFile) {
+
+                    removeSelectedFile.addEventListener(
+                        'click',
+                        function (event) {
+
+                            event.stopPropagation();
+
+                            clearSelectedFile();
+
+                        }
+                    );
+
+                }
+
+
+                if (uploadForm) {
+
+                    uploadForm.addEventListener(
+                        'submit',
+                        function (event) {
+
+                            if (
+                                !fileInput.files ||
+                                !fileInput.files.length
+                            ) {
+
+                                event.preventDefault();
+
+                                window.alert(
+                                    'יש לבחור קובץ Excel לפני הפעלת הבדיקה.'
+                                );
+
+                                return;
+                            }
+
+                            runButton.disabled = true;
+
+                            runButtonText.textContent =
+                                'הבדיקה פועלת...';
+
+                            processingMessage.classList.remove(
+                                'hidden'
+                            );
+
+                            processingMessage.scrollIntoView({
+                                behavior: 'smooth',
+                                block: 'center'
+                            });
+
+                        }
+                    );
+
+                }
+
+
+                /* =============================================
+                   Table search and filters
+                   ============================================= */
+
+                const resultsTable =
+                    document.getElementById(
+                        'results-table'
+                    );
+
+                const searchInput =
+                    document.getElementById(
+                        'table-search'
+                    );
+
+                const clearSearchButton =
+                    document.getElementById(
+                        'clear-search'
+                    );
+
+                const statusFilter =
+                    document.getElementById(
+                        'status-filter'
+                    );
+
+                const resetFiltersButton =
+                    document.getElementById(
+                        'reset-filters'
+                    );
+
+                const emptyResetButton =
+                    document.getElementById(
+                        'empty-reset-button'
+                    );
+
+                const visibleRowCount =
+                    document.getElementById(
+                        'visible-row-count'
+                    );
+
+                const noFilterResults =
+                    document.getElementById(
+                        'no-filter-results'
+                    );
+
+                const tableWrapper =
+                    document.querySelector(
+                        '.table-wrapper'
+                    );
+
+
+                function normalizeText(text) {
+
+                    return String(text || '')
+                        .trim()
+                        .toLowerCase();
+
+                }
+
+
+                function applyTableFilters() {
+
+                    if (!resultsTable) {
+                        return;
+                    }
+
+                    const searchText =
+                        normalizeText(
+                            searchInput
+                                ? searchInput.value
+                                : ''
                         );
 
-                        row.style.display = (
-                            rowText.includes(searchText)
-                                ? ''
-                                : 'none'
+                    const selectedStatus =
+                        statusFilter
+                            ? statusFilter.value
+                            : 'all';
+
+                    const resultRows =
+                        resultsTable.querySelectorAll(
+                            'tbody .result-row'
                         );
-                    });
+
+                    let visibleCount = 0;
+
+                    resultRows.forEach(
+                        function (row) {
+
+                            const rowText =
+                                normalizeText(
+                                    row.textContent
+                                );
+
+                            const rowStatus =
+                                row.dataset.status;
+
+                            const matchesSearch =
+                                !searchText ||
+                                rowText.includes(
+                                    searchText
+                                );
+
+                            const matchesStatus =
+                                selectedStatus === 'all' ||
+                                rowStatus ===
+                                    selectedStatus;
+
+                            const shouldShow =
+                                matchesSearch &&
+                                matchesStatus;
+
+                            row.style.display =
+                                shouldShow
+                                    ? ''
+                                    : 'none';
+
+                            if (shouldShow) {
+                                visibleCount += 1;
+                            }
+
+                        }
+                    );
+
+
+                    if (visibleRowCount) {
+                        visibleRowCount.textContent =
+                            visibleCount;
+                    }
+
+
+                    if (clearSearchButton) {
+
+                        clearSearchButton.classList.toggle(
+                            'hidden',
+                            !searchText
+                        );
+
+                    }
+
+
+                    if (
+                        noFilterResults &&
+                        tableWrapper
+                    ) {
+
+                        const hasNoResults =
+                            visibleCount === 0;
+
+                        noFilterResults.classList.toggle(
+                            'hidden',
+                            !hasNoResults
+                        );
+
+                        tableWrapper.classList.toggle(
+                            'hidden',
+                            hasNoResults
+                        );
+
+                    }
+
                 }
-            );
-        }
+
+
+                function resetFilters() {
+
+                    if (searchInput) {
+                        searchInput.value = '';
+                    }
+
+                    if (statusFilter) {
+                        statusFilter.value = 'all';
+                    }
+
+                    applyTableFilters();
+
+                }
+
+
+                if (searchInput) {
+
+                    searchInput.addEventListener(
+                        'input',
+                        applyTableFilters
+                    );
+
+                }
+
+
+                if (statusFilter) {
+
+                    statusFilter.addEventListener(
+                        'change',
+                        applyTableFilters
+                    );
+
+                }
+
+
+                if (clearSearchButton) {
+
+                    clearSearchButton.addEventListener(
+                        'click',
+                        function () {
+
+                            searchInput.value = '';
+                            searchInput.focus();
+
+                            applyTableFilters();
+
+                        }
+                    );
+
+                }
+
+
+                if (resetFiltersButton) {
+
+                    resetFiltersButton.addEventListener(
+                        'click',
+                        resetFilters
+                    );
+
+                }
+
+
+                if (emptyResetButton) {
+
+                    emptyResetButton.addEventListener(
+                        'click',
+                        resetFilters
+                    );
+
+                }
+
+
+                /* =============================================
+                   Empty-state upload shortcut
+                   ============================================= */
+
+                const goToUploadButton =
+                    document.getElementById(
+                        'go-to-upload'
+                    );
+
+                if (
+                    goToUploadButton &&
+                    fileInput
+                ) {
+
+                    goToUploadButton.addEventListener(
+                        'click',
+                        function () {
+
+                            document
+                                .querySelector(
+                                    '.upload-card'
+                                )
+                                .scrollIntoView({
+                                    behavior: 'smooth',
+                                    block: 'start'
+                                });
+
+                            fileInput.click();
+
+                        }
+                    );
+
+                }
+
+
+                /* =============================================
+                   Delete confirmation
+                   ============================================= */
+
+                const confirmationInput =
+                    document.getElementById(
+                        'confirmation'
+                    );
+
+                const deleteHistoryButton =
+                    document.getElementById(
+                        'delete-history-button'
+                    );
+
+                if (
+                    confirmationInput &&
+                    deleteHistoryButton
+                ) {
+
+                    confirmationInput.addEventListener(
+                        'input',
+                        function () {
+
+                            deleteHistoryButton.disabled =
+                                confirmationInput
+                                    .value
+                                    .trim() !== 'DELETE';
+
+                        }
+                    );
+
+                }
+
+            }
+        );
     </script>
 
 </body>
