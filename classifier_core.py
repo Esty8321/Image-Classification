@@ -12,9 +12,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-import gspread
 import requests
-from gspread.exceptions import APIError
 from openpyxl import load_workbook
 from openpyxl.utils.exceptions import InvalidFileException
 from requests.adapters import HTTPAdapter
@@ -29,6 +27,10 @@ SERVER_IP = "81.28.7.93"
 SERVER_PORT = 80
 ENDPOINT = "/gpu-server-api/predict-binary32-priority"
 
+CACHE_SERVER_IP = "62.90.143.77"
+CACHE_SERVER_PORT = 5259
+CACHE_ENDPOINT = "/imgs-pool/find"
+
 PRIORITY = 0
 
 IMAGE_DOWNLOAD_TIMEOUT_SECONDS = 30
@@ -38,14 +40,6 @@ ENDPOINT_TIMEOUT_SECONDS = 60
 MAX_IMAGE_SIZE_BYTES = 30 * 1024 * 1024
 
 
-# ============================================================
-# Google configuration
-# ============================================================
-
-GOOGLE_CREDENTIALS_FILE = Path("credentials.json")
-GOOGLE_TOKEN_FILE = Path("token.json")
-
-DEFAULT_GOOGLE_SHEET_TITLE = "Image Classification History"
 
 
 # ============================================================
@@ -68,9 +62,6 @@ CSV_EXPECTED_COLUMN = "סטטוס צפוי"
 ACTUAL_STATUS_PREFIX = "סטטוס בפועל "
 
 
-# ============================================================
-# HTTP session
-# ============================================================
 
 def create_http_session() -> requests.Session:
     """
@@ -109,9 +100,6 @@ def create_http_session() -> requests.Session:
     return session
 
 
-# ============================================================
-# General helpers
-# ============================================================
 
 def clean_cell_value(value: Any) -> str:
     if value is None:
@@ -121,12 +109,6 @@ def clean_cell_value(value: Any) -> str:
 
 
 def extract_url_from_excel_value(value: Any) -> str:
-    """
-    Support regular URLs and Excel HYPERLINK formulas.
-
-    Example:
-        =HYPERLINK("https://example.com/image.jpg", "image")
-    """
     text = clean_cell_value(value)
 
     if not text:
@@ -145,9 +127,6 @@ def extract_url_from_excel_value(value: Any) -> str:
 
 
 def normalize_image_url(raw_url: str) -> str:
-    """
-    Add https:// when the URL does not contain a protocol.
-    """
     url = raw_url.strip()
 
     if not url:
@@ -170,6 +149,20 @@ def normalize_image_url(raw_url: str) -> str:
         raise ValueError(f"Invalid image URL: {url}")
 
     return url
+
+
+def create_cache_lookup_url(image_url: str) -> str:
+    normalized_url = normalize_image_url(image_url)
+    parsed = urlparse(normalized_url)
+
+    host = parsed.netloc.lower().strip()
+
+    if host.startswith("www."):
+        host = host[4:]
+
+    path = parsed.path or "/"
+
+    return f"{host}{path}"
 
 
 def create_url_key(url: str) -> str:
@@ -538,16 +531,18 @@ def create_request_body(
 
     return body, timestamp, key
 
-
-def extract_endpoint_status(result: Any) -> int:
+def extract_binary_endpoint_status(result: Any) -> int:
+    """
+    Extract status from the existing binary endpoint.
+    """
     if not isinstance(result, dict):
         raise ValueError(
-            "The endpoint response must be a JSON object"
+            "The binary endpoint response must be a JSON object"
         )
 
     if "status" not in result:
         raise ValueError(
-            "The endpoint JSON does not contain a status field"
+            "The binary endpoint JSON does not contain a status field"
         )
 
     raw_status = result["status"]
@@ -557,16 +552,91 @@ def extract_endpoint_status(result: Any) -> int:
 
     except (TypeError, ValueError) as error:
         raise ValueError(
-            f"Invalid endpoint status value: {raw_status!r}"
+            f"Invalid binary endpoint status value: {raw_status!r}"
         ) from error
 
     if status not in {0, -1}:
         raise ValueError(
-            f"Unexpected endpoint status: {status}. "
+            f"Unexpected binary endpoint status: {status}. "
             "Expected 0 or -1."
         )
 
     return status
+
+
+def extract_endpoints_status(
+    binary_status: int,
+    cache_status: int | None,
+) -> int:
+    if binary_status not in {0, -1}:
+        raise ValueError(
+            f"Invalid binary endpoint status: {binary_status}"
+        )
+
+    if cache_status not in {0, -1, None}:
+        raise ValueError(
+            f"Invalid cache endpoint status: {cache_status}"
+        )
+
+    if binary_status == -1 or cache_status == -1:
+        return -1
+
+    if binary_status == 0 and cache_status == 0:
+        return 0
+
+    # Cache returned 404, or both cache values were 99.
+    if cache_status is None:
+        return binary_status
+
+    raise ValueError(
+        "Could not combine endpoint statuses: "
+        f"binary={binary_status}, cache={cache_status}"
+    )
+
+
+def extract_cache_endpoint_status(
+    result: Any,
+) -> int | None:
+    if not isinstance(result, dict):
+        raise ValueError(
+            "The cache endpoint response must be a JSON object"
+        )
+    raw_filter_status = result["filter_status"]
+    raw_manual_status = result["manual_status"]
+
+    cache_statuses: list[int] = []
+
+
+    for field_name, raw_status in [
+        ("filter status", raw_filter_status),
+        ("manual status", raw_manual_status),
+    ]:
+        try:
+            status = int(raw_status)
+
+        except (TypeError, ValueError) as error:
+            raise ValueError(
+                f"Invalid cache {field_name}: {raw_status!r}"
+            ) from error
+
+        if status not in {-1, 0, 99}:
+            raise ValueError(
+                f"Unexpected cache {field_name}: {status}. "
+                "Expected -1, 0 or 99."
+            )
+
+        cache_statuses.append(status)
+
+    # A blocked decision has the highest priority.
+    if -1 in cache_statuses:
+        return -1
+
+    # At least one cache field explicitly says open.
+    if 0 in cache_statuses:
+        return 0
+
+    # All available values are 99: the cache has no decision.
+    return None
 
 
 def endpoint_status_to_hebrew(status: int) -> str:
@@ -579,7 +649,59 @@ def endpoint_status_to_hebrew(status: int) -> str:
     raise ValueError(f"Unsupported status: {status}")
 
 
-def send_image_to_endpoint(
+def send_url_to_cache_endpoint(
+    session: requests.Session,
+    image_url: str,
+) -> int | None:
+    request_url = (
+        f"http://{CACHE_SERVER_IP}:"
+        f"{CACHE_SERVER_PORT}{CACHE_ENDPOINT}"
+    )
+
+    cache_lookup_url = create_cache_lookup_url(image_url)
+
+    print(f"    Cache lookup URL: {cache_lookup_url}")
+
+    response = session.post(
+        request_url,
+        json={"url": cache_lookup_url},
+        timeout=ENDPOINT_TIMEOUT_SECONDS,
+    )
+
+    # The image does not exist in the cache.
+    if response.status_code == 404:
+        print("    Cache status: image not found")
+        return None
+
+    response.raise_for_status()
+
+    if not response.content:
+        raise ValueError(
+            "The cache endpoint returned an empty response"
+        )
+
+    try:
+        result = response.json()
+
+    except requests.exceptions.JSONDecodeError as error:
+        response_preview = response.text[:500]
+
+        raise ValueError(
+            "The cache endpoint response is not valid JSON. "
+            f"Response: {response_preview}"
+        ) from error
+
+    cache_status = extract_cache_endpoint_status(result)
+
+    print(
+        f"    Cache response: {result}, "
+        f"effective status={cache_status}"
+    )
+
+    return cache_status
+
+
+def send_image_to_binary_endpoint(
     session: requests.Session,
     image_bytes: bytes,
     image_url: str,
@@ -611,7 +733,7 @@ def send_image_to_endpoint(
 
     if not response.content:
         raise ValueError(
-            "The endpoint returned an empty response"
+            "The binary endpoint returned an empty response"
         )
 
     try:
@@ -621,32 +743,54 @@ def send_image_to_endpoint(
         response_preview = response.text[:500]
 
         raise ValueError(
-            "The endpoint response is not valid JSON. "
+            "The binary endpoint response is not valid JSON. "
             f"Response: {response_preview}"
         ) from error
 
-    status = extract_endpoint_status(result)
+    status = extract_binary_endpoint_status(result)
 
     print(
-        f"    Endpoint timestamp={timestamp}, "
+        f"    Binary endpoint timestamp={timestamp}, "
         f"key={key}, status={status}"
     )
 
     return status
 
 
-# ============================================================
-# Process the current XLSX
-# ============================================================
+def send_image_to_endpoints(
+    session: requests.Session,
+    image_bytes: bytes,
+    image_url: str,
+) -> int:
+    binary_status = send_image_to_binary_endpoint(
+        session=session,
+        image_bytes=image_bytes,
+        image_url=image_url,
+    )
+
+    cache_status = send_url_to_cache_endpoint(
+        session=session,
+        image_url=image_url,
+    )
+
+    final_status = extract_endpoints_status(
+        binary_status=binary_status,
+        cache_status=cache_status,
+    )
+
+    print(
+        f"    Combined statuses: "
+        f"binary={binary_status}, "
+        f"cache={cache_status}, "
+        f"final={final_status}"
+    )
+
+    return final_status
 
 def process_current_rows(
     rows: list[dict[str, Any]],
 ) -> dict[str, dict[str, str]]:
-    """
-    Process all rows from the current XLSX.
 
-    Returns a dictionary by normalized URL key.
-    """
     session = create_http_session()
 
     results: dict[str, dict[str, str]] = {}
@@ -682,7 +826,7 @@ def process_current_rows(
                 f"{len(image_bytes)} bytes"
             )
 
-            endpoint_status = send_image_to_endpoint(
+            endpoint_status = send_image_to_endpoints(
                 session=session,
                 image_bytes=image_bytes,
                 image_url=final_url,
@@ -974,30 +1118,6 @@ def save_history_csv(
     temporary_path.replace(csv_path)
 
 
-# ============================================================
-# Google Sheets
-# ============================================================
-
-def authenticate_google() -> gspread.Client:
-    if not GOOGLE_CREDENTIALS_FILE.exists():
-        raise FileNotFoundError(
-            "\nGoogle credentials file was not found.\n"
-            f"Expected file: "
-            f"{GOOGLE_CREDENTIALS_FILE.resolve()}\n"
-            "Download Desktop OAuth credentials and save the "
-            "file as credentials.json."
-        )
-
-    return gspread.oauth(
-        credentials_filename=str(
-            GOOGLE_CREDENTIALS_FILE
-        ),
-        authorized_user_filename=str(
-            GOOGLE_TOKEN_FILE
-        ),
-    )
-
-
 def column_number_to_letter(
     column_number: int,
 ) -> str:
@@ -1019,446 +1139,6 @@ def column_number_to_letter(
 
     return letters
 
-
-def create_google_sheet(
-    headers: list[str],
-    rows: list[dict[str, str]],
-    latest_result_column: str,
-    sheet_title: str,
-    client: gspread.Client | None = None,
-) -> str:
-    """
-    Create a Google Sheet containing all historical results.
-    """
-    print()
-    print("Connecting to Google Sheets...")
-
-    if client is None:
-        client = authenticate_google()
-
-    timestamp = datetime.now().strftime(
-        "%Y-%m-%d %H-%M-%S"
-    )
-
-    full_title = f"{sheet_title} - {timestamp}"
-
-    spreadsheet = client.create(full_title)
-
-    worksheet = spreadsheet.sheet1
-    worksheet.update_title("Results")
-
-    values = [headers]
-
-    for row in rows:
-        values.append(
-            [
-                clean_cell_value(row.get(header, ""))
-                for header in headers
-            ]
-        )
-
-    row_count = max(len(values), 2)
-    column_count = len(headers)
-
-    worksheet.resize(
-        rows=row_count,
-        cols=column_count,
-    )
-
-    last_column_letter = column_number_to_letter(
-        column_count
-    )
-
-    worksheet.update(
-        range_name=(
-            f"A1:{last_column_letter}{len(values)}"
-        ),
-        values=values,
-        value_input_option="USER_ENTERED",
-    )
-
-    latest_column_index = headers.index(
-        latest_result_column
-    )
-
-    # Google Sheets indexes start at zero in formatting requests.
-    latest_column_number_for_formula = (
-        latest_column_index + 1
-    )
-
-    latest_column_letter = column_number_to_letter(
-        latest_column_number_for_formula
-    )
-
-    requests_to_apply: list[dict[str, Any]] = [
-        # Freeze the first row and the first three columns.
-        {
-            "updateSheetProperties": {
-                "properties": {
-                    "sheetId": worksheet.id,
-                    "gridProperties": {
-                        "frozenRowCount": 1,
-                        "frozenColumnCount": 3,
-                    },
-                    "rightToLeft": True,
-                },
-                "fields": (
-                    "gridProperties.frozenRowCount,"
-                    "gridProperties.frozenColumnCount,"
-                    "rightToLeft"
-                ),
-            }
-        },
-
-        # Header style.
-        {
-            "repeatCell": {
-                "range": {
-                    "sheetId": worksheet.id,
-                    "startRowIndex": 0,
-                    "endRowIndex": 1,
-                    "startColumnIndex": 0,
-                    "endColumnIndex": column_count,
-                },
-                "cell": {
-                    "userEnteredFormat": {
-                        "backgroundColor": {
-                            "red": 0.18,
-                            "green": 0.33,
-                            "blue": 0.55,
-                        },
-                        "textFormat": {
-                            "foregroundColor": {
-                                "red": 1,
-                                "green": 1,
-                                "blue": 1,
-                            },
-                            "bold": True,
-                            "fontSize": 11,
-                        },
-                        "horizontalAlignment": "CENTER",
-                        "verticalAlignment": "MIDDLE",
-                        "wrapStrategy": "WRAP",
-                    }
-                },
-                "fields": "userEnteredFormat",
-            }
-        },
-
-        # Body formatting.
-        {
-            "repeatCell": {
-                "range": {
-                    "sheetId": worksheet.id,
-                    "startRowIndex": 1,
-                    "endRowIndex": row_count,
-                    "startColumnIndex": 0,
-                    "endColumnIndex": column_count,
-                },
-                "cell": {
-                    "userEnteredFormat": {
-                        "wrapStrategy": "WRAP",
-                        "verticalAlignment": "MIDDLE",
-                    }
-                },
-                "fields": (
-                    "userEnteredFormat.wrapStrategy,"
-                    "userEnteredFormat.verticalAlignment"
-                ),
-            }
-        },
-
-        # URL column displayed from left to right.
-        {
-            "repeatCell": {
-                "range": {
-                    "sheetId": worksheet.id,
-                    "startRowIndex": 1,
-                    "endRowIndex": row_count,
-                    "startColumnIndex": 0,
-                    "endColumnIndex": 1,
-                },
-                "cell": {
-                    "userEnteredFormat": {
-                        "textDirection": "LEFT_TO_RIGHT",
-                        "horizontalAlignment": "LEFT",
-                    }
-                },
-                "fields": (
-                    "userEnteredFormat.textDirection,"
-                    "userEnteredFormat.horizontalAlignment"
-                ),
-            }
-        },
-
-        # Center status columns.
-        {
-            "repeatCell": {
-                "range": {
-                    "sheetId": worksheet.id,
-                    "startRowIndex": 1,
-                    "endRowIndex": row_count,
-                    "startColumnIndex": 2,
-                    "endColumnIndex": column_count,
-                },
-                "cell": {
-                    "userEnteredFormat": {
-                        "horizontalAlignment": "CENTER",
-                    }
-                },
-                "fields": (
-                    "userEnteredFormat.horizontalAlignment"
-                ),
-            }
-        },
-
-        # URL width.
-        {
-            "updateDimensionProperties": {
-                "range": {
-                    "sheetId": worksheet.id,
-                    "dimension": "COLUMNS",
-                    "startIndex": 0,
-                    "endIndex": 1,
-                },
-                "properties": {
-                    "pixelSize": 380,
-                },
-                "fields": "pixelSize",
-            }
-        },
-
-        # Description width.
-        {
-            "updateDimensionProperties": {
-                "range": {
-                    "sheetId": worksheet.id,
-                    "dimension": "COLUMNS",
-                    "startIndex": 1,
-                    "endIndex": 2,
-                },
-                "properties": {
-                    "pixelSize": 350,
-                },
-                "fields": "pixelSize",
-            }
-        },
-
-        # Expected status and historical result widths.
-        {
-            "updateDimensionProperties": {
-                "range": {
-                    "sheetId": worksheet.id,
-                    "dimension": "COLUMNS",
-                    "startIndex": 2,
-                    "endIndex": column_count,
-                },
-                "properties": {
-                    "pixelSize": 175,
-                },
-                "fields": "pixelSize",
-            }
-        },
-
-        # Header height.
-        {
-            "updateDimensionProperties": {
-                "range": {
-                    "sheetId": worksheet.id,
-                    "dimension": "ROWS",
-                    "startIndex": 0,
-                    "endIndex": 1,
-                },
-                "properties": {
-                    "pixelSize": 48,
-                },
-                "fields": "pixelSize",
-            }
-        },
-
-        # Filter over all columns.
-        {
-            "setBasicFilter": {
-                "filter": {
-                    "range": {
-                        "sheetId": worksheet.id,
-                        "startRowIndex": 0,
-                        "endRowIndex": row_count,
-                        "startColumnIndex": 0,
-                        "endColumnIndex": column_count,
-                    }
-                }
-            }
-        },
-    ]
-
-    if rows:
-        # Green: latest result matches expected result.
-        requests_to_apply.append(
-            {
-                "addConditionalFormatRule": {
-                    "index": 0,
-                    "rule": {
-                        "ranges": [
-                            {
-                                "sheetId": worksheet.id,
-                                "startRowIndex": 1,
-                                "endRowIndex": row_count,
-                                "startColumnIndex": 0,
-                                "endColumnIndex": column_count,
-                            }
-                        ],
-                        "booleanRule": {
-                            "condition": {
-                                "type": "CUSTOM_FORMULA",
-                                "values": [
-                                    {
-                                        "userEnteredValue": (
-                                            f'=AND('
-                                            f'${latest_column_letter}2<>"",'
-                                            f'LEFT(${latest_column_letter}2,5)'
-                                            f'<>"שגיאה",'
-                                            f'$C2=${latest_column_letter}2)'
-                                        )
-                                    }
-                                ],
-                            },
-                            "format": {
-                                "backgroundColor": {
-                                    "red": 0.84,
-                                    "green": 0.94,
-                                    "blue": 0.84,
-                                }
-                            },
-                        },
-                    },
-                }
-            }
-        )
-
-        # Red: latest result does not match expected result.
-        requests_to_apply.append(
-            {
-                "addConditionalFormatRule": {
-                    "index": 1,
-                    "rule": {
-                        "ranges": [
-                            {
-                                "sheetId": worksheet.id,
-                                "startRowIndex": 1,
-                                "endRowIndex": row_count,
-                                "startColumnIndex": 0,
-                                "endColumnIndex": column_count,
-                            }
-                        ],
-                        "booleanRule": {
-                            "condition": {
-                                "type": "CUSTOM_FORMULA",
-                                "values": [
-                                    {
-                                        "userEnteredValue": (
-                                            f'=AND('
-                                            f'${latest_column_letter}2<>"",'
-                                            f'LEFT(${latest_column_letter}2,5)'
-                                            f'<>"שגיאה",'
-                                            f'$C2<>${latest_column_letter}2)'
-                                        )
-                                    }
-                                ],
-                            },
-                            "format": {
-                                "backgroundColor": {
-                                    "red": 0.96,
-                                    "green": 0.82,
-                                    "blue": 0.82,
-                                }
-                            },
-                        },
-                    },
-                }
-            }
-        )
-
-        # Yellow: latest result is an error.
-        requests_to_apply.append(
-            {
-                "addConditionalFormatRule": {
-                    "index": 2,
-                    "rule": {
-                        "ranges": [
-                            {
-                                "sheetId": worksheet.id,
-                                "startRowIndex": 1,
-                                "endRowIndex": row_count,
-                                "startColumnIndex": 0,
-                                "endColumnIndex": column_count,
-                            }
-                        ],
-                        "booleanRule": {
-                            "condition": {
-                                "type": "CUSTOM_FORMULA",
-                                "values": [
-                                    {
-                                        "userEnteredValue": (
-                                            f'=LEFT('
-                                            f'${latest_column_letter}2,5)'
-                                            f'="שגיאה"'
-                                        )
-                                    }
-                                ],
-                            },
-                            "format": {
-                                "backgroundColor": {
-                                    "red": 1,
-                                    "green": 0.93,
-                                    "blue": 0.68,
-                                }
-                            },
-                        },
-                    },
-                }
-            }
-        )
-
-    spreadsheet.batch_update(
-        {"requests": requests_to_apply}
-    )
-
-    return spreadsheet.url
-
-
-# ============================================================
-# Optional JSON backup
-# ============================================================
-
-def save_json_backup(
-    output_path: Path,
-    headers: list[str],
-    rows: list[dict[str, str]],
-) -> None:
-    output_path.parent.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
-
-    data = {
-        "headers": headers,
-        "rows": rows,
-    }
-
-    output_path.write_text(
-        json.dumps(
-            data,
-            ensure_ascii=False,
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
-
-
-# ============================================================
-# Command line arguments
-# ============================================================
 
 def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -1484,35 +1164,6 @@ def parse_arguments() -> argparse.Namespace:
             "Default: image_results_history.csv"
         ),
     )
-
-    parser.add_argument(
-        "--sheet-title",
-        default=DEFAULT_GOOGLE_SHEET_TITLE,
-        help=(
-            "Base title for the Google Sheet. "
-            f"Default: {DEFAULT_GOOGLE_SHEET_TITLE!r}"
-        ),
-    )
-
-    parser.add_argument(
-        "--json-backup",
-        type=Path,
-        default=Path("image_results_history_backup.json"),
-        help=(
-            "Optional JSON backup file. "
-            "Default: image_results_history_backup.json"
-        ),
-    )
-
-    parser.add_argument(
-        "--skip-google-sheet",
-        action="store_true",
-        help=(
-            "Update the CSV history without creating "
-            "a Google Sheet"
-        ),
-    )
-
     return parser.parse_args()
 
 
@@ -1602,52 +1253,6 @@ def main() -> None:
         f"CSV history saved successfully:\n"
         f"{args.history_csv.resolve()}"
     )
-
-    save_json_backup(
-        output_path=args.json_backup,
-        headers=merged_headers,
-        rows=merged_rows,
-    )
-
-    print(
-        f"JSON backup saved:\n"
-        f"{args.json_backup.resolve()}"
-    )
-
-    google_sheet_url = ""
-
-    if not args.skip_google_sheet:
-        try:
-            google_sheet_url = create_google_sheet(
-                headers=merged_headers,
-                rows=merged_rows,
-                latest_result_column=current_run_column,
-                sheet_title=args.sheet_title,
-            )
-
-        except APIError as error:
-            print()
-            print(
-                "The CSV history was saved, but Google Sheets "
-                "returned an error."
-            )
-
-            print(
-                "Verify that Google Sheets API and Google Drive "
-                "API are enabled."
-            )
-
-            print(f"Google API error: {error}")
-
-        except Exception as error:
-            print()
-            print(
-                "The CSV history was saved, but the Google "
-                "Sheet could not be created."
-            )
-
-            print(f"Google Sheet error: {error}")
-
     print()
     print("=" * 70)
     print("Finished")
@@ -1673,13 +1278,7 @@ def main() -> None:
         f"{len(merged_rows)}"
     )
 
-    if google_sheet_url:
-        print(
-            f"Google Sheet URL:\n"
-            f"{google_sheet_url}"
-        )
-
-
+  
 if __name__ == "__main__":
     try:
         main()

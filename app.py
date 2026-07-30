@@ -1,6 +1,4 @@
 from __future__ import annotations
-
-import csv
 import os
 import secrets
 import threading
@@ -9,10 +7,17 @@ from pathlib import Path
 from datetime import datetime
 from io import BytesIO
 from openpyxl import Workbook
-from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.formatting.rule import FormulaRule
+from openpyxl.styles import (
+    Alignment,
+    Font,
+    PatternFill,
+)
 from openpyxl.utils import get_column_letter
-from openpyxl.worksheet.table import Table, TableStyleInfo
-
+from openpyxl.worksheet.table import (
+    Table,
+    TableStyleInfo,
+)
 from dotenv import load_dotenv
 from flask import (
     Flask,
@@ -31,7 +36,6 @@ from classifier_core import (
     read_history_csv,
     read_xlsx_rows,
     save_history_csv,
-    save_json_backup,
 )
 
 
@@ -42,7 +46,6 @@ DATA_DIR = BASE_DIR / "data"
 UPLOAD_DIR = BASE_DIR / "uploads"
 
 HISTORY_CSV = DATA_DIR / "image_results_history.csv"
-JSON_BACKUP = DATA_DIR / "image_results_history_backup.json"
 
 DATA_DIR.mkdir(
     parents=True,
@@ -72,39 +75,86 @@ app.config["MAX_CONTENT_LENGTH"] = (
 # Prevent two processes from writing to the CSV at once.
 processing_lock = threading.Lock()
 
+def calculate_mismatch_summaries(
+    headers: list[str],
+    rows: list[dict[str, str]],
+) -> dict[str, dict[str, object]]:
+    summaries: dict[str, dict[str, object]] = {}
+
+    if len(headers) <= 3:
+        return summaries
+
+    expected_header = headers[2]
+
+    # All columns after the first three are dated result columns.
+    for result_header in headers[3:]:
+        checked_count = 0
+        mismatch_count = 0
+
+        for row in rows:
+            expected_value = str(
+                row.get(expected_header, "")
+            ).strip()
+
+            actual_value = str(
+                row.get(result_header, "")
+            ).strip()
+
+            # A blank value means that this URL did not
+            # participate in this historical run.
+            if not actual_value:
+                continue
+
+            checked_count += 1
+
+            if actual_value != expected_value:
+                mismatch_count += 1
+
+        percentage_value = (
+            mismatch_count / checked_count
+            if checked_count
+            else None
+        )
+
+        summaries[result_header] = {
+            "checked_count": checked_count,
+            "mismatch_count": mismatch_count,
+            "percentage_value": percentage_value,
+            "display": (
+                f"{percentage_value:.2%}"
+                if percentage_value is not None
+                else "—"
+            ),
+        }
+
+    return summaries
+
 
 def create_history_xlsx(
     headers: list[str],
     rows: list[dict[str, str]],
 ) -> BytesIO:
-    """
-    Create a Windows-friendly XLSX workbook.
-    """
-
-    if not headers:
-        raise ValueError(
-            "לא נמצאו כותרות ליצירת קובץ Excel."
-        )
 
     workbook = Workbook()
     worksheet = workbook.active
     worksheet.title = "Results"
 
     worksheet.sheet_view.rightToLeft = True
+
+    # Freeze header row and first three columns.
     worksheet.freeze_panes = "D2"
-    worksheet.sheet_properties.pageSetUpPr.fitToPage = True
-    worksheet.page_setup.fitToWidth = 1
-    worksheet.page_setup.fitToHeight = 0
 
     header_fill = PatternFill(
         fill_type="solid",
         fgColor="2E5480",
     )
+
     header_font = Font(
         color="FFFFFF",
         bold=True,
         size=11,
     )
+
     header_alignment = Alignment(
         horizontal="center",
         vertical="center",
@@ -112,74 +162,41 @@ def create_history_xlsx(
     )
 
     body_alignment = Alignment(
-        horizontal="right",
         vertical="center",
         wrap_text=True,
     )
+
     centered_alignment = Alignment(
         horizontal="center",
         vertical="center",
         wrap_text=True,
     )
+
     url_alignment = Alignment(
         horizontal="left",
         vertical="center",
-        wrap_text=False,
+        wrap_text=True,
         readingOrder=1,
     )
 
-    thin_gray = Side(
-        style="thin",
-        color="D9E1F2",
-    )
-    cell_border = Border(
-        left=thin_gray,
-        right=thin_gray,
-        top=thin_gray,
-        bottom=thin_gray,
-    )
-
-    match_fill = PatternFill(
+    # Special style for the percentage summary row.
+    summary_fill = PatternFill(
         fill_type="solid",
-        fgColor="D9EAD3",
-    )
-    mismatch_fill = PatternFill(
-        fill_type="solid",
-        fgColor="F4CCCC",
-    )
-    error_fill = PatternFill(
-        fill_type="solid",
-        fgColor="FFF2CC",
+        fgColor="DCEEFF",
     )
 
-    safe_headers: list[str] = []
-    used_headers: set[str] = set()
+    summary_font = Font(
+        color="003366",
+        bold=True,
+        size=11,
+    )
 
-    for index, original_header in enumerate(
-        headers,
-        start=1,
-    ):
-        base_header = str(
-            original_header or f"Column {index}"
-        ).strip()
-
-        if not base_header:
-            base_header = f"Column {index}"
-
-        unique_header = base_header
-        duplicate_number = 2
-
-        while unique_header in used_headers:
-            unique_header = (
-                f"{base_header} ({duplicate_number})"
-            )
-            duplicate_number += 1
-
-        used_headers.add(unique_header)
-        safe_headers.append(unique_header)
+    # ========================================================
+    # Write headers
+    # ========================================================
 
     for column_index, header in enumerate(
-        safe_headers,
+        headers,
         start=1,
     ):
         cell = worksheet.cell(
@@ -187,68 +204,33 @@ def create_history_xlsx(
             column=column_index,
             value=header,
         )
+
         cell.fill = header_fill
         cell.font = header_font
         cell.alignment = header_alignment
-        cell.border = cell_border
 
-    latest_header = headers[-1] if len(headers) > 3 else ""
-    expected_header = headers[2] if len(headers) >= 3 else ""
+    # ========================================================
+    # Write normal history rows
+    # ========================================================
 
     for row_index, row in enumerate(
         rows,
         start=2,
     ):
-        expected_value = str(
-            row.get(expected_header, "")
-        ).strip()
-
-        latest_value = str(
-            row.get(latest_header, "")
-        ).strip()
-
-        row_fill = None
-
-        if latest_header and latest_value:
-            if latest_value.startswith("שגיאה"):
-                row_fill = error_fill
-            elif latest_value == expected_value:
-                row_fill = match_fill
-            else:
-                row_fill = mismatch_fill
-
-        for column_index, original_header in enumerate(
+        for column_index, header in enumerate(
             headers,
             start=1,
         ):
-            raw_value = row.get(
-                original_header,
-                "",
-            )
-            value = "" if raw_value is None else str(raw_value)
+            value = row.get(header, "")
 
             cell = worksheet.cell(
                 row=row_index,
                 column=column_index,
                 value=value,
             )
-            cell.border = cell_border
-
-            if row_fill is not None:
-                cell.fill = row_fill
 
             if column_index == 1:
                 cell.alignment = url_alignment
-
-                if value.startswith(
-                    ("http://", "https://")
-                ):
-                    cell.hyperlink = value
-                    cell.style = "Hyperlink"
-                    cell.border = cell_border
-
-                    if row_fill is not None:
-                        cell.fill = row_fill
 
             elif column_index >= 3:
                 cell.alignment = centered_alignment
@@ -256,45 +238,108 @@ def create_history_xlsx(
             else:
                 cell.alignment = body_alignment
 
+    # Row 1 is the header.
+    # Data starts on row 2.
     data_last_row = len(rows) + 1
+
+    # The percentage row is one row after the data.
+    summary_row_number = data_last_row + 1
+
     column_count = len(headers)
-    last_column_letter = get_column_letter(
-        column_count
+
+    mismatch_summaries = calculate_mismatch_summaries(
+        headers=headers,
+        rows=rows,
     )
 
-    worksheet.row_dimensions[1].height = 34
-    worksheet.auto_filter.ref = (
-        f"A1:{last_column_letter}{data_last_row}"
-    )
+    # ========================================================
+    # Write final percentage row
+    # ========================================================
 
-    preferred_widths = {
-        1: 55,
-        2: 48,
-        3: 22,
-    }
+    for column_index, header in enumerate(
+        headers,
+        start=1,
+    ):
+        cell = worksheet.cell(
+            row=summary_row_number,
+            column=column_index,
+        )
+
+        if column_index == 2:
+            cell.value = "אחוז אי־התאמה"
+
+        elif column_index >= 4:
+            summary = mismatch_summaries.get(header)
+
+            if (
+                summary
+                and summary["percentage_value"] is not None
+            ):
+                # Store as a real numeric Excel percentage,
+                # not as text.
+                cell.value = summary["percentage_value"]
+                cell.number_format = "0.00%"
+
+            else:
+                cell.value = "—"
+
+        else:
+            cell.value = ""
+
+        cell.fill = summary_fill
+        cell.font = summary_font
+        cell.alignment = centered_alignment
+
+    # ========================================================
+    # Row heights and column widths
+    # ========================================================
+
+    worksheet.row_dimensions[1].height = 36
+
+    worksheet.row_dimensions[
+        summary_row_number
+    ].height = 30
+
+    if column_count >= 1:
+        worksheet.column_dimensions["A"].width = 55
+
+    if column_count >= 2:
+        worksheet.column_dimensions["B"].width = 48
+
+    if column_count >= 3:
+        worksheet.column_dimensions["C"].width = 22
 
     for column_index in range(
-        1,
+        4,
         column_count + 1,
     ):
         column_letter = get_column_letter(
             column_index
         )
-        width = preferred_widths.get(
-            column_index,
-            24,
-        )
+
         worksheet.column_dimensions[
             column_letter
-        ].width = width
+        ].width = 24
 
-    if rows:
+    # ========================================================
+    # Native Excel table
+    # ========================================================
+
+    # The percentage row is intentionally outside the Excel
+    # table, so sorting/filtering does not hide or mix it
+    # with normal result rows.
+    if headers and rows:
+        last_column_letter = get_column_letter(
+            column_count
+        )
+
+        table_reference = (
+            f"A1:{last_column_letter}{data_last_row}"
+        )
+
         table = Table(
             displayName="ImageClassificationHistory",
-            ref=(
-                f"A1:{last_column_letter}"
-                f"{data_last_row}"
-            ),
+            ref=table_reference,
         )
 
         table.tableStyleInfo = TableStyleInfo(
@@ -311,10 +356,96 @@ def create_history_xlsx(
             cell.fill = header_fill
             cell.font = header_font
             cell.alignment = header_alignment
-            cell.border = cell_border
 
-    worksheet.print_title_rows = "1:1"
-    worksheet.sheet_view.showGridLines = False
+    # ========================================================
+    # Conditional formatting for normal rows
+    # ========================================================
+
+    if rows and len(headers) > 3:
+        latest_column_index = len(headers)
+
+        latest_column_letter = get_column_letter(
+            latest_column_index
+        )
+
+        data_range = (
+            f"A2:"
+            f"{get_column_letter(column_count)}"
+            f"{data_last_row}"
+        )
+
+        green_fill = PatternFill(
+            fill_type="solid",
+            fgColor="D6EFD6",
+        )
+
+        red_fill = PatternFill(
+            fill_type="solid",
+            fgColor="F5D0D0",
+        )
+
+        yellow_fill = PatternFill(
+            fill_type="solid",
+            fgColor="FFEDAC",
+        )
+
+        green_formula = (
+            f'AND('
+            f'${latest_column_letter}2<>"",'
+            f'LEFT(${latest_column_letter}2,5)'
+            f'<>"שגיאה",'
+            f'$C2=${latest_column_letter}2'
+            f')'
+        )
+
+        worksheet.conditional_formatting.add(
+            data_range,
+            FormulaRule(
+                formula=[green_formula],
+                fill=green_fill,
+            ),
+        )
+
+        red_formula = (
+            f'AND('
+            f'${latest_column_letter}2<>"",'
+            f'LEFT(${latest_column_letter}2,5)'
+            f'<>"שגיאה",'
+            f'$C2<>${latest_column_letter}2'
+            f')'
+        )
+
+        worksheet.conditional_formatting.add(
+            data_range,
+            FormulaRule(
+                formula=[red_formula],
+                fill=red_fill,
+            ),
+        )
+
+        yellow_formula = (
+            f'LEFT('
+            f'${latest_column_letter}2,5'
+            f')="שגיאה"'
+        )
+
+        worksheet.conditional_formatting.add(
+            data_range,
+            FormulaRule(
+                formula=[yellow_formula],
+                fill=yellow_fill,
+            ),
+        )
+
+    # Filters cover only the normal data rows.
+    if headers:
+        last_column_letter = get_column_letter(
+            column_count
+        )
+
+        worksheet.auto_filter.ref = (
+            f"A1:{last_column_letter}{data_last_row}"
+        )
 
     output = BytesIO()
     workbook.save(output)
@@ -331,9 +462,6 @@ def load_history_for_display() -> tuple[
     list[str],
     list[dict[str, str]],
 ]:
-    """
-    Load the existing CSV history for display in the browser.
-    """
     try:
         return read_history_csv(HISTORY_CSV)
 
@@ -350,9 +478,6 @@ def load_history_for_display() -> tuple[
         return [], []
 
 
-# ============================================================
-# Main page
-# ============================================================
 
 @app.get("/")
 def index():
@@ -363,18 +488,21 @@ def index():
     if len(headers) > 3:
         latest_result_column = headers[-1]
 
+    mismatch_summaries = calculate_mismatch_summaries(
+        headers=headers,
+        rows=rows,
+    )
+
     return render_template(
         "index.html",
         headers=headers,
         rows=rows,
         latest_result_column=latest_result_column,
+        result_columns=headers[3:],
+        mismatch_summaries=mismatch_summaries,
         history_exists=bool(rows),
     )
 
-
-# ============================================================
-# Run XLSX processing
-# ============================================================
 
 @app.post("/run")
 def run_classification():
@@ -451,11 +579,6 @@ def run_classification():
                 rows=merged_rows,
             )
 
-            save_json_backup(
-                output_path=JSON_BACKUP,
-                headers=merged_headers,
-                rows=merged_rows,
-            )
 
         flash(
             (
@@ -584,10 +707,6 @@ def clear_history():
 
     with processing_lock:
         HISTORY_CSV.unlink(
-            missing_ok=True
-        )
-
-        JSON_BACKUP.unlink(
             missing_ok=True
         )
 
