@@ -5,53 +5,59 @@
 <head>
     <meta charset="utf-8">
 
-    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1"
+    >
 
     <title>מערכת בדיקת תמונות</title>
 
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link
+        rel="stylesheet"
+        href="{{ url_for('static', filename='style.css') }}"
+    >
 </head>
 
 <body>
 
     {% set stats = namespace(
-    matches=0,
-    mismatches=0,
-    errors=0,
-    pending=0
+        matches=0,
+        mismatches=0,
+        errors=0,
+        pending=0
     ) %}
 
     {% for row in rows %}
 
-    {% set expected_status =
-    row.get('סטטוס צפוי', '')
-    %}
+        {% set expected_status =
+            row.get('סטטוס צפוי', '')
+        %}
 
-    {% set actual_status =
-    row.get(latest_result_column, '')
-    %}
+        {% set actual_status =
+            row.get(latest_result_column, '')
+        %}
 
-    {% if actual_status.startswith('שגיאה') %}
+        {% if actual_status.startswith('שגיאה') %}
 
-    {% set stats.errors = stats.errors + 1 %}
+            {% set stats.errors = stats.errors + 1 %}
 
-    {% elif actual_status
-    and expected_status == actual_status
-    %}
+        {% elif actual_status
+            and expected_status == actual_status
+        %}
 
-    {% set stats.matches = stats.matches + 1 %}
+            {% set stats.matches = stats.matches + 1 %}
 
-    {% elif actual_status %}
+        {% elif actual_status %}
 
-    {% set stats.mismatches =
-    stats.mismatches + 1
-    %}
+            {% set stats.mismatches =
+                stats.mismatches + 1
+            %}
 
-    {% else %}
+        {% else %}
 
-    {% set stats.pending = stats.pending + 1 %}
+            {% set stats.pending = stats.pending + 1 %}
 
-    {% endif %}
+        {% endif %}
 
     {% endfor %}
 
@@ -112,36 +118,43 @@
         <div class="messages-container">
 
             {% with messages =
-            get_flashed_messages(
-            with_categories=true
-            )
+                get_flashed_messages(
+                    with_categories=true
+                )
             %}
 
-            {% for category, message in messages %}
+                {% for category, message in messages %}
 
-            <div class="alert {{ category }}" role="alert">
+                <div
+                    class="alert {{ category }}"
+                    role="alert"
+                >
 
-                <div class="alert-icon">
-                    {% if category == 'success' %}
-                    ✓
-                    {% elif category == 'warning' %}
-                    !
-                    {% else %}
-                    ×
-                    {% endif %}
+                    <div class="alert-icon">
+                        {% if category == 'success' %}
+                            ✓
+                        {% elif category == 'warning' %}
+                            !
+                        {% else %}
+                            ×
+                        {% endif %}
+                    </div>
+
+                    <div class="alert-text">
+                        {{ message }}
+                    </div>
+
+                    <button
+                        class="alert-close"
+                        type="button"
+                        aria-label="סגירת הודעה"
+                    >
+                        ×
+                    </button>
+
                 </div>
 
-                <div class="alert-text">
-                    {{ message }}
-                </div>
-
-                <button class="alert-close" type="button" aria-label="סגירת הודעה">
-                    ×
-                </button>
-
-            </div>
-
-            {% endfor %}
+                {% endfor %}
 
             {% endwith %}
 
@@ -171,13 +184,28 @@
             </div>
 
 
-            <form id="upload-form" action="{{ url_for('run_classification') }}" method="post"
-                enctype="multipart/form-data">
+            <form
+                id="upload-form"
+                action="{{ url_for('run_classification') }}"
+                method="post"
+                enctype="multipart/form-data"
+            >
 
-                <div id="upload-drop-zone" class="upload-drop-zone" tabindex="0" role="button"
-                    aria-label="בחירת קובץ Excel">
+                <div
+                    id="upload-drop-zone"
+                    class="upload-drop-zone"
+                    tabindex="0"
+                    role="button"
+                    aria-label="בחירת קובץ Excel"
+                >
 
-                    <input id="xlsx_file" name="xlsx_file" type="file" accept=".xlsx" required>
+                    <input
+                        id="xlsx_file"
+                        name="xlsx_file"
+                        type="file"
+                        accept=".xlsx"
+                        required
+                    >
 
                     <div class="upload-main-icon">
                         ⇧
@@ -191,7 +219,10 @@
                         או לחצי לבחירת קובץ מהמחשב
                     </div>
 
-                    <div id="selected-file" class="selected-file hidden">
+                    <div
+                        id="selected-file"
+                        class="selected-file hidden"
+                    >
 
                         <span class="selected-file-icon">
                             ✓
@@ -199,8 +230,12 @@
 
                         <span id="selected-file-name"></span>
 
-                        <button id="remove-selected-file" class="remove-file-button" type="button"
-                            aria-label="הסרת הקובץ">
+                        <button
+                            id="remove-selected-file"
+                            class="remove-file-button"
+                            type="button"
+                            aria-label="הסרת הקובץ"
+                        >
                             ×
                         </button>
 
@@ -220,7 +255,11 @@
 
                     </div>
 
-                    <button id="run-button" class="primary-action" type="submit">
+                    <button
+                        id="run-button"
+                        class="primary-action"
+                        type="submit"
+                    >
 
                         <span class="button-icon">
                             ▶
@@ -237,7 +276,12 @@
             </form>
 
 
-            <div id="processing-message" class="processing-panel hidden" role="status" aria-live="polite">
+            <div
+                id="processing-message"
+                class="processing-panel hidden"
+                role="status"
+                aria-live="polite"
+            >
 
                 <div class="loading-spinner"></div>
 
@@ -378,15 +422,26 @@
 
                     <div class="search-input-wrapper">
 
-                        <span class="search-icon" aria-hidden="true">
+                        <span
+                            class="search-icon"
+                            aria-hidden="true"
+                        >
                             ⌕
                         </span>
 
-                        <input id="table-search" type="search" placeholder="חיפוש לפי כתובת, תיאור, קטגוריה או סטטוס"
-                            autocomplete="off">
+                        <input
+                            id="table-search"
+                            type="search"
+                            placeholder="חיפוש לפי כתובת, תיאור או סטטוס"
+                            autocomplete="off"
+                        >
 
-                        <button id="clear-search" class="clear-search-button hidden" type="button"
-                            aria-label="ניקוי החיפוש">
+                        <button
+                            id="clear-search"
+                            class="clear-search-button hidden"
+                            type="button"
+                            aria-label="ניקוי החיפוש"
+                        >
                             ×
                         </button>
 
@@ -430,13 +485,20 @@
 
                 <div class="controls-actions">
 
-                    <button id="reset-filters" class="button light-button" type="button">
+                    <button
+                        id="reset-filters"
+                        class="button light-button"
+                        type="button"
+                    >
                         איפוס מסננים
                     </button>
 
                     {% if history_exists %}
 
-                    <a class="button download-button" href="{{ url_for('download_history') }}">
+                    <a
+                        class="button download-button"
+                        href="{{ url_for('download_history') }}"
+                    >
 
                         <span aria-hidden="true">
                             ↓
@@ -507,7 +569,11 @@
 
                             {% for header in headers %}
 
-                            <th {% if loop.index==1 %} class="sticky-url-column" {% endif %}>
+                            <th
+                                {% if loop.index == 1 %}
+                                    class="sticky-url-column"
+                                {% endif %}
+                            >
 
                                 <span class="header-content">
                                     {{ header }}
@@ -526,55 +592,62 @@
 
                         {% for row in rows %}
 
-                        {% set expected_status =
-                        row.get(
-                        'סטטוס צפוי',
-                        ''
-                        )
-                        %}
+                            {% set expected_status =
+                                row.get(
+                                    'סטטוס צפוי',
+                                    ''
+                                )
+                            %}
 
-                        {% set actual_status =
-                        row.get(
-                        latest_result_column,
-                        ''
-                        )
-                        %}
+                            {% set actual_status =
+                                row.get(
+                                    latest_result_column,
+                                    ''
+                                )
+                            %}
 
-                        {% set row_class = '' %}
-                        {% set row_status = 'pending' %}
-
-
-                        {% if actual_status.startswith('שגיאה') %}
-
-                        {% set row_class = 'error-row' %}
-                        {% set row_status = 'error' %}
-
-                        {% elif actual_status
-                        and expected_status == actual_status
-                        %}
-
-                        {% set row_class = 'match-row' %}
-                        {% set row_status = 'match' %}
-
-                        {% elif actual_status %}
-
-                        {% set row_class = 'mismatch-row' %}
-                        {% set row_status = 'mismatch' %}
-
-                        {% endif %}
+                            {% set row_class = '' %}
+                            {% set row_status = 'pending' %}
 
 
-                        <tr class="result-row {{ row_class }}" data-status="{{ row_status }}">
+                            {% if actual_status.startswith('שגיאה') %}
 
-                            {% for header in headers %}
+                                {% set row_class = 'error-row' %}
+                                {% set row_status = 'error' %}
 
-                            <td {% if loop.index==1 %} class="url-cell sticky-url-column" {% endif %}>
-                                {{ row.get(header, '') }}
-                            </td>
+                            {% elif actual_status
+                                and expected_status == actual_status
+                            %}
 
-                            {% endfor %}
+                                {% set row_class = 'match-row' %}
+                                {% set row_status = 'match' %}
 
-                        </tr>
+                            {% elif actual_status %}
+
+                                {% set row_class = 'mismatch-row' %}
+                                {% set row_status = 'mismatch' %}
+
+                            {% endif %}
+
+
+                            <tr
+                                class="result-row {{ row_class }}"
+                                data-status="{{ row_status }}"
+                            >
+
+                                {% for header in headers %}
+
+                                <td
+                                    {% if loop.index == 1 %}
+                                        class="url-cell sticky-url-column"
+                                    {% endif %}
+                                >
+                                    {{ row.get(header, '') }}
+                                </td>
+
+                                {% endfor %}
+
+                            </tr>
 
                         {% endfor %}
 
@@ -583,34 +656,37 @@
 
                             {% for header in headers %}
 
-                            {% if loop.index == 1 %}
+                                {% if loop.index == 1 %}
 
-                            <td class="sticky-url-column"></td>
+                                    <td
+                                        class="sticky-url-column"
+                                    ></td>
 
-                            {% elif loop.index == 2 %}
+                                {% elif loop.index == 2 %}
 
-                            <td class="percentage-summary-label">
-                                אחוז אי־התאמה
-                            </td>
+                                    <td class="percentage-summary-label">
+                                        אחוז אי־התאמה
+                                    </td>
 
-                            {% elif loop.index <= 4 %} <td>
-                                </td>
+                                {% elif loop.index == 3 %}
+
+                                    <td></td>
 
                                 {% else %}
 
-                                <td class="percentage-summary-value">
+                                    <td class="percentage-summary-value">
 
-                                    {{
-                                    mismatch_summaries
-                                    .get(header, {})
-                                    .get('display', '—')
-                                    }}
+                                        {{
+                                            mismatch_summaries
+                                            .get(header, {})
+                                            .get('display', '—')
+                                        }}
 
-                                </td>
+                                    </td>
 
                                 {% endif %}
 
-                                {% endfor %}
+                            {% endfor %}
 
                         </tr>
 
@@ -621,7 +697,10 @@
             </div>
 
 
-            <div id="no-filter-results" class="no-filter-results hidden">
+            <div
+                id="no-filter-results"
+                class="no-filter-results hidden"
+            >
 
                 <div class="empty-icon">
                     ⌕
@@ -635,7 +714,11 @@
                     נסי לשנות את החיפוש או את הסינון.
                 </p>
 
-                <button id="empty-reset-button" class="button" type="button">
+                <button
+                    id="empty-reset-button"
+                    class="button"
+                    type="button"
+                >
                     הצגת כל התוצאות
                 </button>
 
@@ -657,7 +740,11 @@
                     והפעילי את הבדיקה הראשונה.
                 </p>
 
-                <button id="go-to-upload" class="button" type="button">
+                <button
+                    id="go-to-upload"
+                    class="button"
+                    type="button"
+                >
                     בחירת קובץ
                 </button>
 
@@ -668,131 +755,7 @@
         </section>
 
 
-
-
-        <!-- ==================================================
-             Category statistics
-             ================================================== -->
-
-        {% if category_statistics %}
-
-        <section class="card statistics-card">
-
-            <div class="statistics-header">
-
-                <div class="section-heading statistics-heading">
-
-                    <div class="section-number">
-                        3
-                    </div>
-
-                    <div>
-                        <h2>סטטיסטיקה לפי קטגוריה</h2>
-
-                        <p>
-                            צפייה באחוז אי־ההתאמה בכל קטגוריה
-                            לפי ההרצה האחרונה.
-                        </p>
-                    </div>
-
-                </div>
-
-
-                <button id="toggle-statistics-button" class="button light-button" type="button" aria-expanded="false"
-                    aria-controls="category-statistics-content">
-                    הצגת סטטיסטיקה
-                </button>
-
-            </div>
-
-
-            <div id="category-statistics-content" class="category-statistics-content hidden">
-
-                <div class="statistics-note">
-
-                    הנתונים מחושבים לפי עמודת התוצאה האחרונה:
-
-                    <strong>
-                        {{ latest_result_column }}
-                    </strong>
-
-                </div>
-
-
-                <div class="table-wrapper statistics-table-wrapper">
-
-                    <table class="statistics-table">
-
-                        <thead>
-
-                            <tr>
-                                <th>קטגוריה</th>
-                                <th>מספר בדיקות</th>
-                                <th>התאמות</th>
-                                <th>אי־התאמות</th>
-                                <th>אחוז אי־התאמה</th>
-                            </tr>
-
-                        </thead>
-
-                        <tbody>
-
-                            {% for statistic in category_statistics %}
-
-                            <tr>
-
-                                <td class="category-name-cell">
-                                    {{ statistic.category }}
-                                </td>
-
-                                <td>
-                                    {{ statistic.checked_count }}
-                                </td>
-
-                                <td>
-                                    {{ statistic.match_count }}
-                                </td>
-
-                                <td>
-                                    {{ statistic.mismatch_count }}
-                                </td>
-
-                                <td>
-
-                                    <div class="percentage-cell">
-
-                                        <div class="percentage-track">
-
-                                            <div class="category-progress-fill"
-                                                style="--progress-width: {{ '%.2f'|format(statistic.get('mismatch_percentage_value', 0) * 100) }}%;">
-                                            </div>
-                                        </div>
-
-                                        <strong>
-                                            {{ statistic.mismatch_display }}
-                                        </strong>
-
-                                    </div>
-
-                                </td>
-
-                            </tr>
-
-                            {% endfor %}
-
-                        </tbody>
-
-                    </table>
-
-                </div>
-
-            </div>
-
-        </section>
-
-        {% endif %}
-
-
+       
         <section class="card danger-zone">
 
             <details>
@@ -829,20 +792,35 @@
                     </div>
 
 
-                    <form action="{{ url_for('clear_history') }}" method="post" onsubmit="
+                    <form
+                        action="{{ url_for('clear_history') }}"
+                        method="post"
+                        onsubmit="
                             return confirm(
                                 'האם למחוק את כל ההיסטוריה?'
                             );
-                        ">
+                        "
+                    >
 
                         <label for="confirmation">
                             הקלידי DELETE לאישור
                         </label>
 
-                        <input id="confirmation" name="confirmation" type="text" autocomplete="off" placeholder="DELETE"
-                            required>
+                        <input
+                            id="confirmation"
+                            name="confirmation"
+                            type="text"
+                            autocomplete="off"
+                            placeholder="DELETE"
+                            required
+                        >
 
-                        <button id="delete-history-button" class="danger" type="submit" disabled>
+                        <button
+                            id="delete-history-button"
+                            class="danger"
+                            type="submit"
+                            disabled
+                        >
                             מחיקת כל ההיסטוריה
                         </button>
 
@@ -1276,7 +1254,7 @@
                             const matchesStatus =
                                 selectedStatus === 'all' ||
                                 rowStatus ===
-                                selectedStatus;
+                                    selectedStatus;
 
                             const shouldShow =
                                 matchesSearch &&
@@ -1434,67 +1412,6 @@
                                 });
 
                             fileInput.click();
-
-                        }
-                    );
-
-                }
-
-
-
-
-                /* =============================================
-                   Category statistics
-                   ============================================= */
-
-                const toggleStatisticsButton =
-                    document.getElementById(
-                        'toggle-statistics-button'
-                    );
-
-                const categoryStatisticsContent =
-                    document.getElementById(
-                        'category-statistics-content'
-                    );
-
-                if (
-                    toggleStatisticsButton &&
-                    categoryStatisticsContent
-                ) {
-
-                    toggleStatisticsButton.addEventListener(
-                        'click',
-                        function () {
-
-                            const isHidden =
-                                categoryStatisticsContent
-                                    .classList
-                                    .contains('hidden');
-
-                            categoryStatisticsContent
-                                .classList
-                                .toggle('hidden');
-
-                            toggleStatisticsButton
-                                .setAttribute(
-                                    'aria-expanded',
-                                    String(isHidden)
-                                );
-
-                            toggleStatisticsButton.textContent =
-                                isHidden
-                                    ? 'הסתרת סטטיסטיקה'
-                                    : 'הצגת סטטיסטיקה';
-
-                            if (isHidden) {
-
-                                categoryStatisticsContent
-                                    .scrollIntoView({
-                                        behavior: 'smooth',
-                                        block: 'nearest'
-                                    });
-
-                            }
 
                         }
                     );
