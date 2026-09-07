@@ -41,6 +41,11 @@ class ServerConfig(NamedTuple):
     supports_priority: bool
 
 
+class ServerCheckResult(NamedTuple):
+    status_text: str
+    elapsed_ms: int
+
+
 # Each image is checked against every server below, at the same
 # time, so the results can be compared side by side in the history
 # CSV. Each server has its own endpoint path and priority-field
@@ -714,11 +719,17 @@ def check_one_server(
     image_bytes: bytes,
     image_url: str,
     server: ServerConfig,
-) -> str:
+) -> ServerCheckResult:
     """
     Check the image against a single server and return its Hebrew
-    status (or a Hebrew error message).
+    status (or a Hebrew error message) together with how long the
+    API call took, in milliseconds.
     """
+    start_time = time.perf_counter()
+
+    def elapsed_ms() -> int:
+        return round((time.perf_counter() - start_time) * 1000)
+
     try:
         binary_status = send_image_to_binary_endpoint(
             session=session,
@@ -733,25 +744,29 @@ def check_one_server(
         )
 
         status_text = endpoint_status_to_hebrew(binary_status)
+        duration_ms = elapsed_ms()
 
         print(
             f"    [{server.name}] binary={binary_status} "
-            f"({status_text})"
+            f"({status_text}) — {duration_ms} ms"
         )
 
-        return status_text
+        return ServerCheckResult(status_text, duration_ms)
 
     except requests.exceptions.ConnectTimeout as error:
+        duration_ms = elapsed_ms()
         status_text = f"שגיאה: חריגת זמן בחיבור — {error}"
-        print(f"    [{server.name}] {status_text}")
-        return status_text
+        print(f"    [{server.name}] {status_text} — {duration_ms} ms")
+        return ServerCheckResult(status_text, duration_ms)
 
     except requests.exceptions.ReadTimeout as error:
+        duration_ms = elapsed_ms()
         status_text = f"שגיאה: חריגת זמן בתגובה — {error}"
-        print(f"    [{server.name}] {status_text}")
-        return status_text
+        print(f"    [{server.name}] {status_text} — {duration_ms} ms")
+        return ServerCheckResult(status_text, duration_ms)
 
     except requests.exceptions.HTTPError as error:
+        duration_ms = elapsed_ms()
         status_code = (
             error.response.status_code
             if error.response is not None
@@ -759,30 +774,35 @@ def check_one_server(
         )
 
         status_text = f"שגיאה: HTTP {status_code}"
-        print(f"    [{server.name}] {status_text}: {error}")
-        return status_text
+        print(
+            f"    [{server.name}] {status_text} — "
+            f"{duration_ms} ms: {error}"
+        )
+        return ServerCheckResult(status_text, duration_ms)
 
     except requests.exceptions.RequestException as error:
+        duration_ms = elapsed_ms()
         status_text = f"שגיאה: בקשת רשת נכשלה — {error}"
-        print(f"    [{server.name}] {status_text}")
-        return status_text
+        print(f"    [{server.name}] {status_text} — {duration_ms} ms")
+        return ServerCheckResult(status_text, duration_ms)
 
     except Exception as error:
+        duration_ms = elapsed_ms()
         status_text = f"שגיאה: {error}"
-        print(f"    [{server.name}] {status_text}")
-        return status_text
+        print(f"    [{server.name}] {status_text} — {duration_ms} ms")
+        return ServerCheckResult(status_text, duration_ms)
 
 
 def check_image_against_servers(
     session: requests.Session,
     image_bytes: bytes,
     image_url: str,
-) -> dict[str, str]:
+) -> dict[str, ServerCheckResult]:
     """
     Check the image against every server in SERVERS (DEV,
     PRODUCTION, ...) at the same time, so a slow or unresponsive
     server does not delay the others, and return the Hebrew status
-    per server name.
+    and response time (ms) per server name.
     """
     with concurrent.futures.ThreadPoolExecutor(
         max_workers=len(SERVERS)
@@ -798,7 +818,7 @@ def check_image_against_servers(
             for server in SERVERS
         }
 
-        results: dict[str, str] = {
+        results: dict[str, ServerCheckResult] = {
             futures[future]: future.result()
             for future in concurrent.futures.as_completed(futures)
         }
@@ -807,11 +827,19 @@ def check_image_against_servers(
 
 def process_current_rows(
     rows: list[dict[str, Any]],
-) -> dict[str, dict[str, str]]:
-
+) -> tuple[dict[str, dict[str, str]], dict[str, int]]:
+    """
+    Process every row and return:
+        results: per-URL status, keyed by url_key.
+        total_elapsed_ms_by_server: sum of API response time (ms)
+            across every image actually sent to each server.
+    """
     session = create_http_session()
 
     results: dict[str, dict[str, str]] = {}
+    total_elapsed_ms_by_server: dict[str, int] = {
+        server.name: 0 for server in SERVERS
+    }
 
     total = len(rows)
 
@@ -845,23 +873,31 @@ def process_current_rows(
                 f"{len(image_bytes)} bytes"
             )
 
-            actual_status_by_server = check_image_against_servers(
+            server_results = check_image_against_servers(
                 session=session,
                 image_bytes=image_bytes,
                 image_url=final_url,
             )
 
-            for server_name, actual_status in (
-                actual_status_by_server.items()
-            ):
+            actual_status_by_server = {
+                server_name: result.status_text
+                for server_name, result in server_results.items()
+            }
+
+            for server_name, result in server_results.items():
+                total_elapsed_ms_by_server[server_name] += (
+                    result.elapsed_ms
+                )
+
                 match_note = (
                     "match"
-                    if expected_status == actual_status
+                    if expected_status == result.status_text
                     else "does not match"
                 )
                 print(
                     f"    [{server_name}] Actual: "
-                    f"{actual_status} — {match_note}"
+                    f"{result.status_text} "
+                    f"({result.elapsed_ms} ms) — {match_note}"
                 )
 
         except requests.exceptions.ConnectTimeout as error:
@@ -924,7 +960,7 @@ def process_current_rows(
             "actual_status_by_server": actual_status_by_server,
         }
 
-    return results
+    return results, total_elapsed_ms_by_server
 
 
 # ============================================================
@@ -1250,8 +1286,10 @@ def main() -> None:
     print("Processing current images")
     print("=" * 70)
 
-    current_results = process_current_rows(
-        current_xlsx_rows
+    current_results, total_elapsed_ms_by_server = (
+        process_current_rows(
+            current_xlsx_rows
+        )
     )
 
     print()
@@ -1331,6 +1369,14 @@ def main() -> None:
         f"Total URLs in history: "
         f"{len(merged_rows)}"
     )
+
+    print()
+    print("Total API response time per server:")
+
+    for server_name, total_ms in (
+        total_elapsed_ms_by_server.items()
+    ):
+        print(f"  [{server_name}] {total_ms} ms")
 
   
 if __name__ == "__main__":

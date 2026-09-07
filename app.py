@@ -750,7 +750,10 @@ def run_classification():
                     "לא נמצאו כתובות תקינות בקובץ"
                 )
 
-            current_results = process_current_rows(
+            (
+                current_results,
+                total_elapsed_ms_by_server,
+            ) = process_current_rows(
                 current_xlsx_rows
             )
 
@@ -782,12 +785,19 @@ def run_classification():
             in current_run_columns.items()
         )
 
+        timing_text = " | ".join(
+            f"{server_name}: {total_ms:,} ms"
+            for server_name, total_ms
+            in total_elapsed_ms_by_server.items()
+        )
+
         flash(
             (
                 "הבדיקה הסתיימה בהצלחה. "
                 f"עובדו {len(current_results)} כתובות. "
                 f"עמודות התוצאה החדשות: "
-                f"{new_columns_text}"
+                f"{new_columns_text}. "
+                f"זמן תגובה כולל: {timing_text}"
             ),
             "success",
         )
