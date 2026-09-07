@@ -29,11 +29,15 @@ from flask import (
     url_for,
 )
 from classifier_core import (
+    SERVERS,
     get_base_headers,
+    get_server_name_from_column_header,
     merge_results_into_history,
     process_current_rows,
     read_xlsx_rows,
 )
+
+SERVER_NAMES = [server_name for server_name, _, _ in SERVERS]
 
 from history_db import (
     clear_history_db,
@@ -125,6 +129,77 @@ def calculate_mismatch_summaries(
     return summaries
 
 
+def find_latest_result_columns(
+    headers: list[str],
+) -> dict[str, str]:
+    """
+    Find the most recent result column for each server (DEV,
+    PRODUCTION, ...). Columns are appended in run order, so the
+    last column seen for a server is its latest run.
+
+    Returns a dict in SERVERS order (DEV before PRODUCTION),
+    including only servers that have at least one column.
+    """
+    latest_by_server: dict[str, str] = {}
+
+    for header in headers:
+        server_name = get_server_name_from_column_header(header)
+
+        if server_name is not None:
+            latest_by_server[server_name] = header
+
+    return {
+        server_name: latest_by_server[server_name]
+        for server_name in SERVER_NAMES
+        if server_name in latest_by_server
+    }
+
+
+def calculate_status_counts(
+    rows: list[dict[str, str]],
+    result_column: str,
+) -> dict[str, int]:
+    """
+    Count matches/mismatches/errors/pending for one result column,
+    comparing each row's value in that column against its expected
+    status.
+    """
+    counts = {
+        "matches": 0,
+        "mismatches": 0,
+        "errors": 0,
+        "pending": 0,
+    }
+
+    if not result_column:
+        return counts
+
+    expected_header = "סטטוס צפוי"
+
+    for row in rows:
+        expected_value = str(
+            row.get(expected_header, "")
+        ).strip()
+
+        actual_value = str(
+            row.get(result_column, "")
+        ).strip()
+
+        if not actual_value:
+            counts["pending"] += 1
+
+        elif actual_value.startswith("שגיאה"):
+            counts["errors"] += 1
+
+        elif actual_value == expected_value:
+            counts["matches"] += 1
+
+        else:
+            counts["mismatches"] += 1
+
+    return counts
+
+
 def calculate_category_statistics(
     rows: list[dict[str, str]],
     latest_result_column: str,
@@ -158,12 +233,15 @@ def calculate_category_statistics(
                 "checked_count": 0,
                 "match_count": 0,
                 "mismatch_count": 0,
+                "error_count": 0,
             },
         )
 
         values["checked_count"] += 1
 
-        if actual == expected:
+        if actual.startswith("שגיאה"):
+            values["error_count"] += 1
+        elif actual == expected:
             values["match_count"] += 1
         else:
             values["mismatch_count"] += 1
@@ -173,6 +251,7 @@ def calculate_category_statistics(
     for category, values in grouped.items():
         checked_count = values["checked_count"]
         mismatch_count = values["mismatch_count"]
+        error_count = values["error_count"]
         mismatch_percentage = (
             mismatch_count / checked_count
             if checked_count
@@ -185,6 +264,7 @@ def calculate_category_statistics(
                 "checked_count": checked_count,
                 "match_count": values["match_count"],
                 "mismatch_count": mismatch_count,
+                "error_count": error_count,
                 "mismatch_percentage": mismatch_percentage,
                 "mismatch_display": (
                     f"{mismatch_percentage:.2%}"
@@ -565,34 +645,58 @@ def load_history_for_display() -> tuple[
 def index():
     headers, rows = load_history_for_display()
 
-    latest_result_column = ""
     result_columns: list[str] = []
 
     if "סטטוס צפוי" in headers:
         expected_index = headers.index("סטטוס צפוי")
         result_columns = headers[expected_index + 1:]
 
-        if result_columns:
-            latest_result_column = result_columns[-1]
+    # Most recent result column per server (DEV, PRODUCTION, ...),
+    # used to compute correct, independent match/mismatch/error
+    # measures for each server rather than mixing them together.
+    latest_result_columns = find_latest_result_columns(headers)
+
+    # The overall "latest result" (row highlighting, percentage
+    # note) stays anchored to PRODUCTION, since that reflects the
+    # live system; fall back to the last result column otherwise.
+    latest_result_column = latest_result_columns.get(
+        "PRODUCTION",
+        result_columns[-1] if result_columns else "",
+    )
+
+    stats_by_server = {
+        server_name: calculate_status_counts(
+            rows=rows,
+            result_column=column_name,
+        )
+        for server_name, column_name
+        in latest_result_columns.items()
+    }
 
     mismatch_summaries = calculate_mismatch_summaries(
         headers=headers,
         rows=rows,
     )
 
-    category_statistics = calculate_category_statistics(
-        rows=rows,
-        latest_result_column=latest_result_column,
-    )
+    category_statistics_by_server = {
+        server_name: calculate_category_statistics(
+            rows=rows,
+            latest_result_column=column_name,
+        )
+        for server_name, column_name
+        in latest_result_columns.items()
+    }
 
     return render_template(
         "index.html",
         headers=headers,
         rows=rows,
         latest_result_column=latest_result_column,
+        latest_result_columns=latest_result_columns,
         result_columns=result_columns,
+        stats_by_server=stats_by_server,
         mismatch_summaries=mismatch_summaries,
-        category_statistics=category_statistics,
+        category_statistics_by_server=category_statistics_by_server,
         history_exists=bool(rows),
     )
 

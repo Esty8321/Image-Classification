@@ -257,6 +257,27 @@ def create_run_column_names(
         counter += 1
 
 
+def get_server_name_from_column_header(header: str) -> str | None:
+    """
+    Return the server name (e.g. "DEV", "PRODUCTION") encoded in a
+    history run-result column header created by
+    create_run_column_names, or None when the header is not one of
+    those columns.
+    """
+    if not header.startswith(ACTUAL_STATUS_PREFIX):
+        return None
+
+    remainder = header[len(ACTUAL_STATUS_PREFIX):]
+    first_word = remainder.split(" ", 1)[0] if remainder else ""
+
+    server_names = {server_name for server_name, _, _ in SERVERS}
+
+    if first_word in server_names:
+        return first_word
+
+    return None
+
+
 def find_first_data_row(worksheet) -> int | None:
     """
     Find the first row that contains at least one real value.

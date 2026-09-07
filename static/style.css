@@ -785,6 +785,100 @@ button:disabled {
 }
 
 
+.summary-pending {
+    background: #f5f6f8;
+    border-color: var(--border-dark);
+}
+
+
+.summary-pending .summary-icon {
+    background: #e5e9ef;
+    color: var(--text-soft);
+}
+
+
+/* Total card alone does not need the full 4-column grid. */
+.summary-grid-total {
+    grid-template-columns: minmax(150px, 260px);
+    margin-bottom: 14px;
+}
+
+
+/*
+ * Each server (DEV, PRODUCTION, ...) gets its own panel with its
+ * own match/mismatch/error measures, side by side for comparison.
+ */
+.env-summary-grid {
+    display: grid;
+
+    grid-template-columns:
+        repeat(auto-fit, minmax(320px, 1fr));
+
+    gap: 14px;
+    margin-bottom: 22px;
+}
+
+
+.env-summary-panel {
+    padding: 16px;
+
+    border: 1px solid var(--border);
+    border-radius: 14px;
+
+    background: var(--surface-soft);
+}
+
+
+.env-summary-panel .summary-grid {
+    grid-template-columns:
+        repeat(auto-fit, minmax(115px, 1fr));
+
+    margin-bottom: 0;
+}
+
+
+.env-summary-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+
+    margin-bottom: 14px;
+}
+
+
+.env-badge {
+    padding: 4px 12px;
+
+    border-radius: 999px;
+
+    font-size: 13px;
+    font-weight: bold;
+    letter-spacing: 0.02em;
+
+    color: white;
+}
+
+
+.env-badge-dev {
+    background: #8956d6;
+}
+
+
+.env-badge-production {
+    background: var(--primary);
+}
+
+
+.env-summary-column {
+    direction: ltr;
+    text-align: right;
+
+    color: var(--text-soft);
+    font-size: 13px;
+}
+
+
 /* ==========================================================
    Table controls
    ========================================================== */
@@ -1497,118 +1591,117 @@ td.cell-error {
         align-items: flex-start;
     }
 
+}
 
-    /* ==========================================================
+
+/* ==========================================================
    Category statistics
    ========================================================== */
 
-    .statistics-card {
-        border-top: 4px solid #2e5480;
-    }
+.statistics-card {
+    border-top: 4px solid #2e5480;
+}
 
+.statistics-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 20px;
+    flex-wrap: wrap;
+}
+
+.statistics-heading {
+    margin-bottom: 0;
+}
+
+.category-statistics-content {
+    margin-top: 22px;
+}
+
+.env-statistics-block {
+    margin-bottom: 26px;
+}
+
+.env-statistics-block:last-child {
+    margin-bottom: 0;
+}
+
+.statistics-table-wrapper {
+    max-height: 520px;
+}
+
+.statistics-table {
+    min-width: 800px;
+}
+
+.statistics-table th:first-child {
+    min-width: 230px;
+}
+
+.statistics-table td {
+    background: white;
+}
+
+.statistics-table tbody tr:nth-child(even) td {
+    background: #f8fafc;
+}
+
+.statistics-table tbody tr:hover td {
+    background: #eef5fc;
+}
+
+.category-name-cell {
+    font-weight: bold;
+    text-align: right;
+}
+
+.percentage-cell {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+
+    min-width: 180px;
+}
+
+.percentage-track {
+    flex: 1;
+    height: 12px;
+
+    overflow: hidden;
+
+    border-radius: 999px;
+    background: #e2e8f0;
+}
+
+.percentage-bar {
+    height: 100%;
+
+    border-radius: 999px;
+
+    background:
+        linear-gradient(90deg,
+            #e9a5a5,
+            #c65353);
+}
+
+.percentage-cell strong {
+    min-width: 62px;
+    direction: ltr;
+    white-space: nowrap;
+}
+
+.category-progress-fill {
+    width: var(--progress-width, 0%);
+}
+
+
+@media (max-width: 760px) {
     .statistics-header {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        gap: 20px;
-        flex-wrap: wrap;
+        align-items: stretch;
+        flex-direction: column;
     }
 
-    .statistics-heading {
-        margin-bottom: 0;
-    }
-
-    .category-statistics-content {
-        margin-top: 22px;
-    }
-
-    .statistics-note {
-        margin-bottom: 14px;
-        padding: 13px 15px;
-
-        border: 1px solid #c7d7e8;
-        border-radius: 10px;
-
-        background: #eef5fc;
-        color: #365b80;
-    }
-
-    .statistics-table-wrapper {
-        max-height: 520px;
-    }
-
-    .statistics-table {
-        min-width: 800px;
-    }
-
-    .statistics-table th:first-child {
-        min-width: 230px;
-    }
-
-    .statistics-table td {
-        background: white;
-    }
-
-    .statistics-table tbody tr:nth-child(even) td {
-        background: #f8fafc;
-    }
-
-    .statistics-table tbody tr:hover td {
-        background: #eef5fc;
-    }
-
-    .category-name-cell {
-        font-weight: bold;
-        text-align: right;
-    }
-
-    .percentage-cell {
-        display: flex;
-        align-items: center;
-        gap: 12px;
-
-        min-width: 180px;
-    }
-
-    .percentage-track {
-        flex: 1;
-        height: 12px;
-
-        overflow: hidden;
-
-        border-radius: 999px;
-        background: #e2e8f0;
-    }
-
-    .percentage-bar {
-        height: 100%;
-
-        border-radius: 999px;
-
-        background:
-            linear-gradient(90deg,
-                #e9a5a5,
-                #c65353);
-    }
-
-    .percentage-cell strong {
-        min-width: 62px;
-        direction: ltr;
-        white-space: nowrap;
-    }
-
-    @media (max-width: 760px) {
-        .statistics-header {
-            align-items: stretch;
-            flex-direction: column;
-        }
-
-        .statistics-header>button {
-            width: 100%;
-        }
-    }
-
-    .category-progress-fill {
-        width: var(--progress-width, 0%);
+    .statistics-header>button {
+        width: 100%;
     }
 }

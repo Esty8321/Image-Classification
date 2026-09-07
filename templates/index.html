@@ -14,48 +14,6 @@
 
 <body>
 
-    {% set stats = namespace(
-    matches=0,
-    mismatches=0,
-    errors=0,
-    pending=0
-    ) %}
-
-    {% for row in rows %}
-
-    {% set expected_status =
-    row.get('סטטוס צפוי', '')
-    %}
-
-    {% set actual_status =
-    row.get(latest_result_column, '')
-    %}
-
-    {% if actual_status.startswith('שגיאה') %}
-
-    {% set stats.errors = stats.errors + 1 %}
-
-    {% elif actual_status
-    and expected_status == actual_status
-    %}
-
-    {% set stats.matches = stats.matches + 1 %}
-
-    {% elif actual_status %}
-
-    {% set stats.mismatches =
-    stats.mismatches + 1
-    %}
-
-    {% else %}
-
-    {% set stats.pending = stats.pending + 1 %}
-
-    {% endif %}
-
-    {% endfor %}
-
-
     <!-- ======================================================
          Main header
          ====================================================== -->
@@ -286,7 +244,7 @@
 
             <!-- Summary cards -->
 
-            <div class="summary-grid">
+            <div class="summary-grid summary-grid-total">
 
                 <div class="summary-card summary-total">
 
@@ -306,62 +264,120 @@
 
                 </div>
 
+            </div>
 
-                <div class="summary-card summary-match">
 
-                    <div class="summary-icon">
-                        ✓
-                    </div>
+            <!-- Per-server measures: DEV and PRODUCTION are each
+                 measured against their own answer separately. -->
 
-                    <div>
-                        <span class="summary-label">
-                            התאמות
+            <div class="env-summary-grid">
+
+                {% for server_name, counts in stats_by_server.items() %}
+
+                <div class="env-summary-panel">
+
+                    <div class="env-summary-header">
+
+                        <span class="env-badge env-badge-{{ server_name|lower }}">
+                            {{ server_name }}
                         </span>
 
-                        <strong class="summary-number">
-                            {{ stats.matches }}
-                        </strong>
+                        {% if latest_result_columns.get(server_name) %}
+
+                        <span class="env-summary-column">
+                            {{ latest_result_columns[server_name] }}
+                        </span>
+
+                        {% endif %}
+
+                    </div>
+
+                    <div class="summary-grid">
+
+                        <div class="summary-card summary-match">
+
+                            <div class="summary-icon">
+                                ✓
+                            </div>
+
+                            <div>
+                                <span class="summary-label">
+                                    התאמות
+                                </span>
+
+                                <strong class="summary-number">
+                                    {{ counts.matches }}
+                                </strong>
+                            </div>
+
+                        </div>
+
+
+                        <div class="summary-card summary-mismatch">
+
+                            <div class="summary-icon">
+                                ≠
+                            </div>
+
+                            <div>
+                                <span class="summary-label">
+                                    אי־התאמות
+                                </span>
+
+                                <strong class="summary-number">
+                                    {{ counts.mismatches }}
+                                </strong>
+                            </div>
+
+                        </div>
+
+
+                        <div class="summary-card summary-error">
+
+                            <div class="summary-icon">
+                                !
+                            </div>
+
+                            <div>
+                                <span class="summary-label">
+                                    שגיאות
+                                </span>
+
+                                <strong class="summary-number">
+                                    {{ counts.errors }}
+                                </strong>
+                            </div>
+
+                        </div>
+
+
+                        {% if counts.pending %}
+
+                        <div class="summary-card summary-pending">
+
+                            <div class="summary-icon">
+                                …
+                            </div>
+
+                            <div>
+                                <span class="summary-label">
+                                    ללא תוצאה
+                                </span>
+
+                                <strong class="summary-number">
+                                    {{ counts.pending }}
+                                </strong>
+                            </div>
+
+                        </div>
+
+                        {% endif %}
+
                     </div>
 
                 </div>
 
-
-                <div class="summary-card summary-mismatch">
-
-                    <div class="summary-icon">
-                        ≠
-                    </div>
-
-                    <div>
-                        <span class="summary-label">
-                            אי־התאמות
-                        </span>
-
-                        <strong class="summary-number">
-                            {{ stats.mismatches }}
-                        </strong>
-                    </div>
-
-                </div>
-
-
-                <div class="summary-card summary-error">
-
-                    <div class="summary-icon">
-                        !
-                    </div>
-
-                    <div>
-                        <span class="summary-label">
-                            שגיאות
-                        </span>
-
-                        <strong class="summary-number">
-                            {{ stats.errors }}
-                        </strong>
-                    </div>
-
-                </div>
+                {% endfor %}
 
             </div>
 
@@ -693,7 +709,17 @@
              Category statistics
              ================================================== -->
 
-        {% if category_statistics %}
+        {% set has_category_statistics = namespace(value=false) %}
+
+        {% for server_name, statistics in category_statistics_by_server.items() %}
+
+        {% if statistics %}
+        {% set has_category_statistics.value = true %}
+        {% endif %}
+
+        {% endfor %}
+
+        {% if has_category_statistics.value %}
 
         <section class="card statistics-card">
 
@@ -709,8 +735,9 @@
                         <h2>סטטיסטיקה לפי קטגוריה</h2>
 
                         <p>
-                            צפייה באחוז אי־ההתאמה בכל קטגוריה
-                            לפי ההרצה האחרונה.
+                            צפייה באחוז אי־ההתאמה בכל קטגוריה, בנפרד
+                            עבור DEV ועבור PRODUCTION, לפי ההרצה האחרונה
+                            של כל שרת.
                         </p>
                     </div>
 
@@ -727,84 +754,102 @@
 
             <div id="category-statistics-content" class="category-statistics-content hidden">
 
-                <div class="statistics-note">
+                {% for server_name, statistics in category_statistics_by_server.items() %}
 
-                    הנתונים מחושבים לפי עמודת תוצאת ה־PRODUCTION האחרונה
-                    (ניתן להשוות מול עמודת ה־DEV הסמוכה לה בטבלה):
+                {% if statistics %}
 
-                    <strong>
-                        {{ latest_result_column }}
-                    </strong>
+                <div class="env-statistics-block">
 
-                </div>
+                    <div class="env-summary-header">
+
+                        <span class="env-badge env-badge-{{ server_name|lower }}">
+                            {{ server_name }}
+                        </span>
+
+                        <span class="env-summary-column">
+                            {{ latest_result_columns.get(server_name, '') }}
+                        </span>
+
+                    </div>
 
 
-                <div class="table-wrapper statistics-table-wrapper">
+                    <div class="table-wrapper statistics-table-wrapper">
 
-                    <table class="statistics-table">
+                        <table class="statistics-table">
 
-                        <thead>
+                            <thead>
 
-                            <tr>
-                                <th>קטגוריה</th>
-                                <th>מספר בדיקות</th>
-                                <th>התאמות</th>
-                                <th>אי־התאמות</th>
-                                <th>אחוז אי־התאמה</th>
-                            </tr>
+                                <tr>
+                                    <th>קטגוריה</th>
+                                    <th>מספר בדיקות</th>
+                                    <th>התאמות</th>
+                                    <th>אי־התאמות</th>
+                                    <th>שגיאות</th>
+                                    <th>אחוז אי־התאמה</th>
+                                </tr>
 
-                        </thead>
+                            </thead>
 
-                        <tbody>
+                            <tbody>
 
-                            {% for statistic in category_statistics %}
+                                {% for statistic in statistics %}
 
-                            <tr>
+                                <tr>
 
-                                <td class="category-name-cell">
-                                    {{ statistic.category }}
-                                </td>
+                                    <td class="category-name-cell">
+                                        {{ statistic.category }}
+                                    </td>
 
-                                <td>
-                                    {{ statistic.checked_count }}
-                                </td>
+                                    <td>
+                                        {{ statistic.checked_count }}
+                                    </td>
 
-                                <td>
-                                    {{ statistic.match_count }}
-                                </td>
+                                    <td>
+                                        {{ statistic.match_count }}
+                                    </td>
 
-                                <td>
-                                    {{ statistic.mismatch_count }}
-                                </td>
+                                    <td>
+                                        {{ statistic.mismatch_count }}
+                                    </td>
 
-                                <td>
+                                    <td>
+                                        {{ statistic.error_count }}
+                                    </td>
 
-                                    <div class="percentage-cell">
+                                    <td>
 
-                                        <div class="percentage-track">
+                                        <div class="percentage-cell">
 
-                                            <div class="category-progress-fill"
-                                                style="--progress-width: {{ '%.2f'|format(statistic.get('mismatch_percentage_value', 0) * 100) }}%;">
+                                            <div class="percentage-track">
+
+                                                <div class="category-progress-fill"
+                                                    style="--progress-width: {{ '%.2f'|format(statistic.get('mismatch_percentage_value', 0) * 100) }}%;">
+                                                </div>
                                             </div>
+
+                                            <strong>
+                                                {{ statistic.mismatch_display }}
+                                            </strong>
+
                                         </div>
 
-                                        <strong>
-                                            {{ statistic.mismatch_display }}
-                                        </strong>
+                                    </td>
 
-                                    </div>
+                                </tr>
 
-                                </td>
+                                {% endfor %}
 
-                            </tr>
+                            </tbody>
 
-                            {% endfor %}
+                        </table>
 
-                        </tbody>
-
-                    </table>
+                    </div>
 
                 </div>
+
+                {% endif %}
+
+                {% endfor %}
 
             </div>
 
