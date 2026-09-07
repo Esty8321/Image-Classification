@@ -37,7 +37,7 @@ from classifier_core import (
     read_xlsx_rows,
 )
 
-SERVER_NAMES = [server_name for server_name, _, _ in SERVERS]
+SERVER_NAMES = [server.name for server in SERVERS]
 
 from history_db import (
     clear_history_db,

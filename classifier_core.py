@@ -3,13 +3,12 @@ import argparse
 import concurrent.futures
 import csv
 import hashlib
-import json
 import re
 import struct
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 from urllib.parse import urlparse
 
 import requests
@@ -25,22 +24,44 @@ from urllib3.util.retry import Retry
 
 DEV_SERVER_IP = "10.0.0.206"
 DEV_SERVER_PORT = 80
+# The DEV server exposes the non-priority variant of the endpoint
+# and rejects requests that include the priority field.
+DEV_ENDPOINT = "/gpu-server-api/predict-binary32"
 
 PRODUCTION_SERVER_IP = "84.95.87.212"
 PRODUCTION_SERVER_PORT = 80
+PRODUCTION_ENDPOINT = "/gpu-server-api/predict-binary32-priority"
 
-ENDPOINT = "/gpu-server-api/predict-binary32-priority"
 
-# Each image is checked against every server below, in order, so the
-# results can be compared side by side in the history CSV.
-SERVERS: list[tuple[str, str, int]] = [
-    ("DEV", DEV_SERVER_IP, DEV_SERVER_PORT),
-    ("PRODUCTION", PRODUCTION_SERVER_IP, PRODUCTION_SERVER_PORT),
+class ServerConfig(NamedTuple):
+    name: str
+    ip: str
+    port: int
+    endpoint: str
+    supports_priority: bool
+
+
+# Each image is checked against every server below, at the same
+# time, so the results can be compared side by side in the history
+# CSV. Each server has its own endpoint path and priority-field
+# support, since DEV and PRODUCTION do not speak the same wire
+# format.
+SERVERS: list[ServerConfig] = [
+    ServerConfig(
+        name="DEV",
+        ip=DEV_SERVER_IP,
+        port=DEV_SERVER_PORT,
+        endpoint=DEV_ENDPOINT,
+        supports_priority=False,
+    ),
+    ServerConfig(
+        name="PRODUCTION",
+        ip=PRODUCTION_SERVER_IP,
+        port=PRODUCTION_SERVER_PORT,
+        endpoint=PRODUCTION_ENDPOINT,
+        supports_priority=True,
+    ),
 ]
-
-CACHE_SERVER_IP = "62.90.143.77"
-CACHE_SERVER_PORT = 5259
-CACHE_ENDPOINT = "/imgs-pool/find"
 
 PRIORITY = 0
 
@@ -164,20 +185,6 @@ def normalize_image_url(raw_url: str) -> str:
     return url
 
 
-def create_cache_lookup_url(image_url: str) -> str:
-    normalized_url = normalize_image_url(image_url)
-    parsed = urlparse(normalized_url)
-
-    host = parsed.netloc.lower().strip()
-
-    if host.startswith("www."):
-        host = host[4:]
-
-    path = parsed.path or "/"
-
-    return f"{host}{path}"
-
-
 def create_url_key(url: str) -> str:
     normalized = normalize_image_url(url)
     parsed = urlparse(normalized)
@@ -240,11 +247,11 @@ def create_run_column_names(
 
     while True:
         candidate_names = {
-            server_name: (
-                f"{ACTUAL_STATUS_PREFIX}{server_name} "
+            server.name: (
+                f"{ACTUAL_STATUS_PREFIX}{server.name} "
                 f"{timestamp}{suffix}"
             )
-            for server_name, _, _ in SERVERS
+            for server in SERVERS
         }
 
         if not any(
@@ -270,7 +277,7 @@ def get_server_name_from_column_header(header: str) -> str | None:
     remainder = header[len(ACTUAL_STATUS_PREFIX):]
     first_word = remainder.split(" ", 1)[0] if remainder else ""
 
-    server_names = {server_name for server_name, _, _ in SERVERS}
+    server_names = {server.name for server in SERVERS}
 
     if first_word in server_names:
         return first_word
@@ -554,9 +561,16 @@ def create_request_body(
     image_bytes: bytes,
     page_url: str,
     referer: str,
-    priority: int,
+    priority: int | None,
 ) -> tuple[bytes, str, str]:
-    if not 0 <= priority <= 0xFFFFFFFF:
+    """
+    priority=None omits the priority field entirely, for servers
+    (e.g. DEV) that do not accept it.
+    """
+    if (
+        priority is not None
+        and not 0 <= priority <= 0xFFFFFFFF
+    ):
         raise ValueError(
             "priority must be between 0 and 4294967295"
         )
@@ -573,20 +587,22 @@ def create_request_body(
         key_source.encode("utf-8")
     ).hexdigest()
 
-    priority_bytes = struct.pack("!I", priority)
     image_size_bytes = struct.pack("!I", len(image_bytes))
 
-    body = b"".join(
-        [
-            null_terminated(page_url),
-            null_terminated(referer),
-            null_terminated(key),
-            null_terminated(timestamp),
-            priority_bytes,
-            image_size_bytes,
-            image_bytes,
-        ]
-    )
+    parts = [
+        null_terminated(page_url),
+        null_terminated(referer),
+        null_terminated(key),
+        null_terminated(timestamp),
+    ]
+
+    if priority is not None:
+        parts.append(struct.pack("!I", priority))
+
+    parts.append(image_size_bytes)
+    parts.append(image_bytes)
+
+    body = b"".join(parts)
 
     return body, timestamp, key
 
@@ -623,81 +639,6 @@ def extract_binary_endpoint_status(result: Any) -> int:
     return status
 
 
-def extract_endpoints_status(
-    binary_status: int,
-    cache_status: int | None,
-) -> int:
-    if binary_status not in {0, -1}:
-        raise ValueError(
-            f"Invalid binary endpoint status: {binary_status}"
-        )
-
-    if cache_status not in {0, -1, None}:
-        raise ValueError(
-            f"Invalid cache endpoint status: {cache_status}"
-        )
-
-    if binary_status == -1 or cache_status == -1:
-        return -1
-
-    if binary_status == 0 and cache_status == 0:
-        return 0
-
-    # Cache returned 404, or both cache values were 99.
-    if cache_status is None:
-        return binary_status
-
-    raise ValueError(
-        "Could not combine endpoint statuses: "
-        f"binary={binary_status}, cache={cache_status}"
-    )
-
-
-def extract_cache_endpoint_status(
-    result: Any,
-) -> int | None:
-    if not isinstance(result, dict):
-        raise ValueError(
-            "The cache endpoint response must be a JSON object"
-        )
-    raw_filter_status = result["filter_status"]
-    raw_manual_status = result["manual_status"]
-
-    cache_statuses: list[int] = []
-
-
-    for field_name, raw_status in [
-        ("filter status", raw_filter_status),
-        ("manual status", raw_manual_status),
-    ]:
-        try:
-            status = int(raw_status)
-
-        except (TypeError, ValueError) as error:
-            raise ValueError(
-                f"Invalid cache {field_name}: {raw_status!r}"
-            ) from error
-
-        if status not in {-1, 0, 99}:
-            raise ValueError(
-                f"Unexpected cache {field_name}: {status}. "
-                "Expected -1, 0 or 99."
-            )
-
-        cache_statuses.append(status)
-
-    # A blocked decision has the highest priority.
-    if -1 in cache_statuses:
-        return -1
-
-    # At least one cache field explicitly says open.
-    if 0 in cache_statuses:
-        return 0
-
-    # All available values are 99: the cache has no decision.
-    return None
-
-
 def endpoint_status_to_hebrew(status: int) -> str:
     if status == 0:
         return "פתוח"
@@ -708,64 +649,14 @@ def endpoint_status_to_hebrew(status: int) -> str:
     raise ValueError(f"Unsupported status: {status}")
 
 
-def send_url_to_cache_endpoint(
-    session: requests.Session,
-    image_url: str,
-) -> int | None:
-    request_url = (
-        f"http://{CACHE_SERVER_IP}:"
-        f"{CACHE_SERVER_PORT}{CACHE_ENDPOINT}"
-    )
-
-    cache_lookup_url = create_cache_lookup_url(image_url)
-
-    print(f"    Cache lookup URL: {cache_lookup_url}")
-
-    response = session.post(
-        request_url,
-        json={"url": cache_lookup_url},
-        timeout=ENDPOINT_TIMEOUT_SECONDS,
-    )
-
-    # The image does not exist in the cache.
-    if response.status_code == 404:
-        print("    Cache status: image not found")
-        return None
-
-    response.raise_for_status()
-
-    if not response.content:
-        raise ValueError(
-            "The cache endpoint returned an empty response"
-        )
-
-    try:
-        result = response.json()
-
-    except requests.exceptions.JSONDecodeError as error:
-        response_preview = response.text[:500]
-
-        raise ValueError(
-            "The cache endpoint response is not valid JSON. "
-            f"Response: {response_preview}"
-        ) from error
-
-    cache_status = extract_cache_endpoint_status(result)
-
-    print(
-        f"    Cache response: {result}, "
-        f"effective status={cache_status}"
-    )
-
-    return cache_status
-
-
 def send_image_to_binary_endpoint(
     session: requests.Session,
     image_bytes: bytes,
     image_url: str,
     server_ip: str,
     server_port: int,
+    endpoint: str,
+    priority: int | None,
 ) -> int:
     referer = build_referer(image_url)
 
@@ -773,11 +664,11 @@ def send_image_to_binary_endpoint(
         image_bytes=image_bytes,
         page_url=image_url,
         referer=referer,
-        priority=PRIORITY,
+        priority=priority,
     )
 
     request_url = (
-        f"http://{server_ip}:{server_port}{ENDPOINT}"
+        f"http://{server_ip}:{server_port}{endpoint}"
     )
 
     response = session.post(
@@ -822,38 +713,29 @@ def check_one_server(
     session: requests.Session,
     image_bytes: bytes,
     image_url: str,
-    server_name: str,
-    server_ip: str,
-    server_port: int,
-    cache_status: int | None,
-    cache_error: Exception | None,
+    server: ServerConfig,
 ) -> str:
     """
     Check the image against a single server and return its Hebrew
     status (or a Hebrew error message).
     """
     try:
-        if cache_error is not None:
-            raise cache_error
-
         binary_status = send_image_to_binary_endpoint(
             session=session,
             image_bytes=image_bytes,
             image_url=image_url,
-            server_ip=server_ip,
-            server_port=server_port,
+            server_ip=server.ip,
+            server_port=server.port,
+            endpoint=server.endpoint,
+            priority=(
+                PRIORITY if server.supports_priority else None
+            ),
         )
 
-        final_status = extract_endpoints_status(
-            binary_status=binary_status,
-            cache_status=cache_status,
-        )
-
-        status_text = endpoint_status_to_hebrew(final_status)
+        status_text = endpoint_status_to_hebrew(binary_status)
 
         print(
-            f"    [{server_name}] binary={binary_status}, "
-            f"cache={cache_status}, final={final_status} "
+            f"    [{server.name}] binary={binary_status} "
             f"({status_text})"
         )
 
@@ -861,12 +743,12 @@ def check_one_server(
 
     except requests.exceptions.ConnectTimeout as error:
         status_text = f"שגיאה: חריגת זמן בחיבור — {error}"
-        print(f"    [{server_name}] {status_text}")
+        print(f"    [{server.name}] {status_text}")
         return status_text
 
     except requests.exceptions.ReadTimeout as error:
         status_text = f"שגיאה: חריגת זמן בתגובה — {error}"
-        print(f"    [{server_name}] {status_text}")
+        print(f"    [{server.name}] {status_text}")
         return status_text
 
     except requests.exceptions.HTTPError as error:
@@ -877,17 +759,17 @@ def check_one_server(
         )
 
         status_text = f"שגיאה: HTTP {status_code}"
-        print(f"    [{server_name}] {status_text}: {error}")
+        print(f"    [{server.name}] {status_text}: {error}")
         return status_text
 
     except requests.exceptions.RequestException as error:
         status_text = f"שגיאה: בקשת רשת נכשלה — {error}"
-        print(f"    [{server_name}] {status_text}")
+        print(f"    [{server.name}] {status_text}")
         return status_text
 
     except Exception as error:
         status_text = f"שגיאה: {error}"
-        print(f"    [{server_name}] {status_text}")
+        print(f"    [{server.name}] {status_text}")
         return status_text
 
 
@@ -901,21 +783,7 @@ def check_image_against_servers(
     PRODUCTION, ...) at the same time, so a slow or unresponsive
     server does not delay the others, and return the Hebrew status
     per server name.
-
-    The cache lookup is shared across servers; a failure there is
-    treated as a failure for every server.
     """
-    try:
-        cache_status = send_url_to_cache_endpoint(
-            session=session,
-            image_url=image_url,
-        )
-        cache_error: Exception | None = None
-
-    except Exception as error:
-        cache_status = None
-        cache_error = error
-
     with concurrent.futures.ThreadPoolExecutor(
         max_workers=len(SERVERS)
     ) as executor:
@@ -925,13 +793,9 @@ def check_image_against_servers(
                 session=session,
                 image_bytes=image_bytes,
                 image_url=image_url,
-                server_name=server_name,
-                server_ip=server_ip,
-                server_port=server_port,
-                cache_status=cache_status,
-                cache_error=cache_error,
-            ): server_name
-            for server_name, server_ip, server_port in SERVERS
+                server=server,
+            ): server.name
+            for server in SERVERS
         }
 
         results: dict[str, str] = {
@@ -1006,8 +870,8 @@ def process_current_rows(
             )
             print(f"    {download_error}")
             actual_status_by_server = {
-                server_name: download_error
-                for server_name, _, _ in SERVERS
+                server.name: download_error
+                for server in SERVERS
             }
 
         except requests.exceptions.ReadTimeout as error:
@@ -1016,8 +880,8 @@ def process_current_rows(
             )
             print(f"    {download_error}")
             actual_status_by_server = {
-                server_name: download_error
-                for server_name, _, _ in SERVERS
+                server.name: download_error
+                for server in SERVERS
             }
 
         except requests.exceptions.HTTPError as error:
@@ -1030,8 +894,8 @@ def process_current_rows(
             download_error = f"שגיאה: HTTP {status_code}"
             print(f"    {download_error}: {error}")
             actual_status_by_server = {
-                server_name: download_error
-                for server_name, _, _ in SERVERS
+                server.name: download_error
+                for server in SERVERS
             }
 
         except requests.exceptions.RequestException as error:
@@ -1040,16 +904,16 @@ def process_current_rows(
             )
             print(f"    {download_error}")
             actual_status_by_server = {
-                server_name: download_error
-                for server_name, _, _ in SERVERS
+                server.name: download_error
+                for server in SERVERS
             }
 
         except Exception as error:
             download_error = f"שגיאה: {error}"
             print(f"    {download_error}")
             actual_status_by_server = {
-                server_name: download_error
-                for server_name, _, _ in SERVERS
+                server.name: download_error
+                for server in SERVERS
             }
 
         results[url_key] = {
@@ -1139,16 +1003,7 @@ def merge_results_into_history(
     existing_rows: list[dict[str, str]],
     current_results: dict[str, dict[str, str]],
 ) -> tuple[list[str], list[dict[str, str]], dict[str, str]]:
-    """
-    Merge the current run into the CSV history.
 
-    Existing URLs remain on their original rows.
-    New URLs are appended at the bottom.
-
-    Each run adds one result column per server (DEV, PRODUCTION,
-    ...), all sharing the same run timestamp and placed next to
-    each other, so the columns can be compared directly.
-    """
     headers = list(existing_headers)
 
     for base_header in get_base_headers():
@@ -1160,8 +1015,8 @@ def merge_results_into_history(
 
     current_run_columns = create_run_column_names(headers)
 
-    for server_name, _, _ in SERVERS:
-        headers.append(current_run_columns[server_name])
+    for server in SERVERS:
+        headers.append(current_run_columns[server.name])
 
     history_by_key: dict[str, dict[str, str]] = {}
     ordered_keys: list[str] = []
@@ -1193,8 +1048,8 @@ def merge_results_into_history(
         }
 
         # The new run columns are blank by default.
-        for server_name, _, _ in SERVERS:
-            normalized_row[current_run_columns[server_name]] = ""
+        for server in SERVERS:
+            normalized_row[current_run_columns[server.name]] = ""
 
         history_by_key[url_key] = normalized_row
         ordered_keys.append(url_key)
@@ -1221,11 +1076,11 @@ def merge_results_into_history(
                 CSV_EXPECTED_COLUMN
             ]
 
-            for server_name, _, _ in SERVERS:
+            for server in SERVERS:
                 history_row[
-                    current_run_columns[server_name]
+                    current_run_columns[server.name]
                 ] = current_result["actual_status_by_server"][
-                    server_name
+                    server.name
                 ]
 
         else:
@@ -1250,11 +1105,11 @@ def merge_results_into_history(
                 CSV_EXPECTED_COLUMN
             ]
 
-            for server_name, _, _ in SERVERS:
+            for server in SERVERS:
                 new_row[
-                    current_run_columns[server_name]
+                    current_run_columns[server.name]
                 ] = current_result["actual_status_by_server"][
-                    server_name
+                    server.name
                 ]
 
             history_by_key[url_key] = new_row
