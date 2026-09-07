@@ -28,8 +28,6 @@ from flask import (
     send_file,
     url_for,
 )
-from werkzeug.utils import secure_filename
-
 from classifier_core import (
     get_base_headers,
     merge_results_into_history,
@@ -618,16 +616,15 @@ def run_classification():
 
         return redirect(url_for("index"))
 
-    safe_name = (
-        secure_filename(uploaded_file.filename)
-        or "input.xlsx"
-    )
-
     run_id = uuid.uuid4().hex
 
+    # Build the saved filename from the run id alone: the original
+    # name may contain non-ASCII characters (e.g. Hebrew) that
+    # secure_filename() strips, which can drop the .xlsx extension
+    # entirely. The extension itself was already validated above.
     upload_path = (
         UPLOAD_DIR
-        / f"{run_id}_{safe_name}"
+        / f"{run_id}.xlsx"
     )
 
     uploaded_file.save(upload_path)
@@ -657,7 +654,7 @@ def run_classification():
             (
                 merged_headers,
                 merged_rows,
-                current_run_column,
+                current_run_columns,
             ) = merge_results_into_history(
                 existing_headers=existing_headers,
                 existing_rows=existing_rows,
@@ -669,13 +666,18 @@ def run_classification():
                 rows=merged_rows,
             )
 
+        new_columns_text = " | ".join(
+            f"{server_name}: {column_name}"
+            for server_name, column_name
+            in current_run_columns.items()
+        )
 
         flash(
             (
                 "הבדיקה הסתיימה בהצלחה. "
                 f"עובדו {len(current_results)} כתובות. "
-                f"עמודת התוצאה החדשה: "
-                f"{current_run_column}"
+                f"עמודות התוצאה החדשות: "
+                f"{new_columns_text}"
             ),
             "success",
         )
