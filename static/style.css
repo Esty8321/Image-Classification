@@ -1037,7 +1037,7 @@ tbody .result-row:hover td {
 }
 
 
-tbody .result-row:nth-child(even):not(.match-row):not(.mismatch-row):not(.error-row) {
+tbody .result-row:nth-child(even) {
     background: #f8fafc;
 }
 
@@ -1075,21 +1075,29 @@ td.sticky-url-column {
 }
 
 
-.match-row,
-.match-row td {
+/*
+ * Each result column (DEV, PRODUCTION, and every past run) is
+ * colored on its own cell, independently of the other columns,
+ * so they can be compared side by side in the same row.
+ */
+td.cell-match {
     background: var(--success-background);
+    color: var(--success-text);
+    font-weight: bold;
 }
 
 
-.mismatch-row,
-.mismatch-row td {
+td.cell-mismatch {
     background: var(--mismatch-background);
+    color: var(--mismatch-text);
+    font-weight: bold;
 }
 
 
-.error-row,
-.error-row td {
+td.cell-error {
     background: var(--error-background);
+    color: var(--error-text);
+    font-weight: bold;
 }
 
 

@@ -437,17 +437,8 @@ def create_history_xlsx(
     # ========================================================
 
     if rows and len(headers) > 4:
-        latest_column_index = len(headers)
-
-        latest_column_letter = get_column_letter(
-            latest_column_index
-        )
-
-        data_range = (
-            f"A2:"
-            f"{get_column_letter(column_count)}"
-            f"{data_last_row}"
-        )
+        # Column D holds the expected status (see get_base_headers).
+        expected_column_letter = "D"
 
         green_fill = PatternFill(
             fill_type="solid",
@@ -464,53 +455,68 @@ def create_history_xlsx(
             fgColor="FFEDAC",
         )
 
-        green_formula = (
-            f'AND('
-            f'${latest_column_letter}2<>"",'
-            f'LEFT(${latest_column_letter}2,5)'
-            f'<>"שגיאה",'
-            f'$D2=${latest_column_letter}2'
-            f')'
-        )
+        # Each result column (DEV, PRODUCTION, and every past run)
+        # is colored on its own, independently of the other
+        # columns, so they can be compared side by side.
+        for result_column_index in range(5, column_count + 1):
+            result_column_letter = get_column_letter(
+                result_column_index
+            )
 
-        worksheet.conditional_formatting.add(
-            data_range,
-            FormulaRule(
-                formula=[green_formula],
-                fill=green_fill,
-            ),
-        )
+            column_range = (
+                f"{result_column_letter}2:"
+                f"{result_column_letter}{data_last_row}"
+            )
 
-        red_formula = (
-            f'AND('
-            f'${latest_column_letter}2<>"",'
-            f'LEFT(${latest_column_letter}2,5)'
-            f'<>"שגיאה",'
-            f'$D2<>${latest_column_letter}2'
-            f')'
-        )
+            green_formula = (
+                f'AND('
+                f'${result_column_letter}2<>"",'
+                f'LEFT(${result_column_letter}2,5)'
+                f'<>"שגיאה",'
+                f'${expected_column_letter}2='
+                f'${result_column_letter}2'
+                f')'
+            )
 
-        worksheet.conditional_formatting.add(
-            data_range,
-            FormulaRule(
-                formula=[red_formula],
-                fill=red_fill,
-            ),
-        )
+            worksheet.conditional_formatting.add(
+                column_range,
+                FormulaRule(
+                    formula=[green_formula],
+                    fill=green_fill,
+                ),
+            )
 
-        yellow_formula = (
-            f'LEFT('
-            f'${latest_column_letter}2,5'
-            f')="שגיאה"'
-        )
+            red_formula = (
+                f'AND('
+                f'${result_column_letter}2<>"",'
+                f'LEFT(${result_column_letter}2,5)'
+                f'<>"שגיאה",'
+                f'${expected_column_letter}2<>'
+                f'${result_column_letter}2'
+                f')'
+            )
 
-        worksheet.conditional_formatting.add(
-            data_range,
-            FormulaRule(
-                formula=[yellow_formula],
-                fill=yellow_fill,
-            ),
-        )
+            worksheet.conditional_formatting.add(
+                column_range,
+                FormulaRule(
+                    formula=[red_formula],
+                    fill=red_fill,
+                ),
+            )
+
+            yellow_formula = (
+                f'LEFT('
+                f'${result_column_letter}2,5'
+                f')="שגיאה"'
+            )
+
+            worksheet.conditional_formatting.add(
+                column_range,
+                FormulaRule(
+                    formula=[yellow_formula],
+                    fill=yellow_fill,
+                ),
+            )
 
     # Filters cover only the normal data rows.
     if headers:

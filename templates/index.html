@@ -540,36 +540,55 @@
                         )
                         %}
 
-                        {% set row_class = '' %}
                         {% set row_status = 'pending' %}
 
 
                         {% if actual_status.startswith('שגיאה') %}
 
-                        {% set row_class = 'error-row' %}
                         {% set row_status = 'error' %}
 
                         {% elif actual_status
                         and expected_status == actual_status
                         %}
 
-                        {% set row_class = 'match-row' %}
                         {% set row_status = 'match' %}
 
                         {% elif actual_status %}
 
-                        {% set row_class = 'mismatch-row' %}
                         {% set row_status = 'mismatch' %}
 
                         {% endif %}
 
 
-                        <tr class="result-row {{ row_class }}" data-status="{{ row_status }}">
+                        <tr class="result-row" data-status="{{ row_status }}">
 
                             {% for header in headers %}
 
-                            <td {% if loop.index==1 %} class="url-cell sticky-url-column" {% endif %}>
-                                {{ row.get(header, '') }}
+                            {% set cell_value = row.get(header, '') %}
+
+                            {% set cell_class = '' %}
+
+                            {% if header in result_columns and cell_value %}
+
+                            {% if cell_value.startswith('שגיאה') %}
+
+                            {% set cell_class = 'cell-error' %}
+
+                            {% elif cell_value == expected_status %}
+
+                            {% set cell_class = 'cell-match' %}
+
+                            {% else %}
+
+                            {% set cell_class = 'cell-mismatch' %}
+
+                            {% endif %}
+
+                            {% endif %}
+
+                            <td
+                                class="{{ cell_class }} {% if loop.index==1 %}url-cell sticky-url-column{% endif %}">
+                                {{ cell_value }}
                             </td>
 
                             {% endfor %}
